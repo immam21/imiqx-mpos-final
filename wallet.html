@@ -133,12 +133,11 @@
   }
 
   function buildShareMessage(businessName, code) {
-    const brand = businessName || "our store";
-    const walletUrl = location.origin + location.pathname.replace(/[^/]*$/, "") + "wallet.html";
+    const brand = businessName || "Ennaval";
     return `🎉 Shop at ${brand} and save more!\n\n`
       + `Use my referral code: ${code}\n`
       + `Use it on your first purchase — we BOTH earn reward points 💰 to redeem on future bills.\n\n`
-      + `✨ Great deals every day. Check your rewards wallet here:\n${walletUrl}`;
+      + `✨ Great deals every day. Visit us here:\nhttps://ennaval-business-card.vercel.app/`;
   }
 
   function share(kind) {
