@@ -1,0 +1,247 @@
+const crypto = require("crypto");
+const { sbSelect, sbInsert } = require("../../lib/supabase-rest");
+
+function base64Url(value) {
+  return Buffer.from(value).toString("base64").replace(/=/g, "").replace(/\+/g, "-").replace(/\//g, "_");
+}
+
+async function googleAccessToken() {
+  const email = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
+  const privateKey = String(process.env.GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY || "").replace(/\\n/g, "\n");
+  if (!email || !privateKey) throw new Error("google_service_account_not_configured");
+  const now = Math.floor(Date.now() / 1000);
+  const header = base64Url(JSON.stringify({ alg: "RS256", typ: "JWT" }));
+  const claim = base64Url(JSON.stringify({
+    iss: email,
+    scope: "https://www.googleapis.com/auth/spreadsheets",
+    aud: "https://oauth2.googleapis.com/token",
+    iat: now,
+    exp: now + 3600
+  }));
+  const signer = crypto.createSign("RSA-SHA256");
+  signer.update(`${header}.${claim}`);
+  const assertion = `${header}.${claim}.${signer.sign(privateKey, "base64url")}`;
+  const response = await fetch("https://oauth2.googleapis.com/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer", assertion })
+  });
+  if (!response.ok) throw new Error(`google_token_failed:${response.status}`);
+  return (await response.json()).access_token;
+}
+
+async function createSheetTab(token, spreadsheetId, title) {
+  const response = await fetch(
+    `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}:batchUpdate`,
+    {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ requests: [{ addSheet: { properties: { title } } }] })
+    }
+  );
+  // A 400 here usually means the tab already exists, which is fine for our purpose.
+  return response.ok || response.status === 400;
+}
+
+async function replaceSheetRows(token, sheetName, rows) {
+  const spreadsheetId = process.env.GOOGLE_SHEETS_SPREADSHEET_ID;
+  if (!spreadsheetId) throw new Error("google_spreadsheet_not_configured");
+  const range = `${sheetName}!A:Z`;
+  const clearUrl = `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}/values/${encodeURIComponent(range)}:clear`;
+  const clearInit = {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: "{}"
+  };
+  let clearResponse = await fetch(clearUrl, clearInit);
+  // A 400 on clear means the tab does not exist yet — create it, then retry once.
+  if (clearResponse.status === 400) {
+    await createSheetTab(token, spreadsheetId, sheetName);
+    clearResponse = await fetch(clearUrl, clearInit);
+  }
+  if (!clearResponse.ok) throw new Error(`google_sheet_clear_failed:${sheetName}:${clearResponse.status}`);
+  const response = await fetch(
+    `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}/values/${encodeURIComponent(`${sheetName}!A1`)}?valueInputOption=USER_ENTERED`,
+    {
+      method: "PUT",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ values: rows })
+    }
+  );
+  if (!response.ok) throw new Error(`google_sheet_append_failed:${sheetName}:${response.status}`);
+}
+
+async function recordSyncRuns(businessIds, details) {
+  if (!businessIds.length) return;
+  await sbInsert("google_sheets_sync_runs", businessIds.map((businessId) => ({
+    business_id: businessId,
+    status: details.status,
+    sales_rows: details.salesRows || 0,
+    expense_rows: details.expenseRows || 0,
+    customer_rows: details.customerRows || 0,
+    error_message: details.errorMessage || null,
+    completed_at: new Date().toISOString()
+  }))).catch(() => {});
+}
+
+async function runBackup() {
+  let businessIds = [];
+  let salesRows = 0;
+  let expenseRows = 0;
+  let customerRows = 0;
+  try {
+    const [orders, orderItems, expenses, customers, members, walletTransactions, referrals, membershipSettings, products, inventoryBalances, productPrices, orderPayments, cashSessions, promoCodes, purchaseOrders] = await Promise.all([
+      sbSelect("orders", "select=id,business_id,order_no,store_id,channel,customer_name,status,subtotal,tax_amount,cgst_amount,sgst_amount,prices_include_gst,discount_amount,manual_discount_amount,promo_code,promo_discount_amount,total_amount,delivery_address,delivery_city,delivery_pincode,sold_by_user_id,sold_by_name,created_at&order=created_at.desc"),
+      sbSelect("order_items", "select=order_id,sku,name,quantity,unit_price,line_total,tax_percent,taxable_amount,cgst_amount,sgst_amount,price_includes_gst"),
+      sbSelect("expenses", "select=business_id,id,store_id,expense_date,expense_at,category,description,amount,payment_mode,recorded_by_user_id,recorded_by_name,created_at&order=expense_at.desc"),
+      sbSelect("customers", "select=business_id,customer_code,name,phone,place,full_address,city,pincode,created_at&order=created_at.desc"),
+      sbSelect("membership_members", "select=id,business_id,name,phone,tier,referral_code,wallet_balance,wallet_expires_at,eligible_purchase_count,successful_referral_count,joined_at,last_purchase_at&order=joined_at.desc"),
+      sbSelect("membership_wallet_transactions", "select=business_id,member_id,order_id,transaction_type,amount,balance_after,created_at&order=created_at.desc"),
+      sbSelect("membership_referrals", "select=business_id,referrer_member_id,referred_member_id,successful_order_id,status,completed_at,created_at&order=created_at.desc"),
+      sbSelect("membership_program_settings", "select=business_id,regular_first_purchase_reward_percent,regular_repeat_purchase_reward_percent,referral_reward_percent,regular_wallet_redemption_percent,regular_wallet_expiry_months,updated_at"),
+      sbSelect("products", "select=id,business_id,sku,barcode,name,category,unit,hsn_code,tax_percent,is_active&order=sku.asc"),
+      sbSelect("inventory_balances", "select=product_id,store_id,qty_on_hand,reorder_level,location"),
+      sbSelect("product_prices", "select=product_id,store_id,mrp,selling_price,cost_price,effective_from&order=effective_from.desc"),
+      sbSelect("order_payments", "select=business_id,order_id,mode,amount,created_at&order=created_at.desc").catch(() => []),
+      sbSelect("cash_sessions", "select=business_id,store_id,opening_amount,closing_amount,opened_at,closed_at,opened_by_name,closed_by_name,status&order=opened_at.desc").catch(() => []),
+      sbSelect("promo_codes", "select=business_id,code,description,discount_type,discount_value,min_order_amount,max_discount_amount,usage_limit,used_count,start_date,end_date,is_active,created_at&order=created_at.desc").catch(() => []),
+      sbSelect("purchase_orders", "select=business_id,id,store_id,po_date,place,bill_no,shop_name,ref_id,total_amount,misc,comments,recorded_by_user_id,recorded_by_name,created_at&order=po_date.desc,created_at.desc").catch(() => [])
+    ]);
+    businessIds = Array.from(new Set([...orders, ...expenses, ...customers].map((row) => row.business_id).filter(Boolean)));
+    salesRows = orders.length;
+    expenseRows = expenses.length;
+    customerRows = customers.length;
+    const backupAt = new Date().toISOString();
+
+    // Latest price per (product, store); fall back to any latest price for the product.
+    const priceByProductStore = {};
+    const latestPriceByProduct = {};
+    productPrices.forEach((price) => {
+      const key = `${price.product_id}|${price.store_id}`;
+      if (!(key in priceByProductStore)) priceByProductStore[key] = price;
+      if (!(price.product_id in latestPriceByProduct)) latestPriceByProduct[price.product_id] = price;
+    });
+    const balancesByProduct = {};
+    inventoryBalances.forEach((balance) => {
+      (balancesByProduct[balance.product_id] = balancesByProduct[balance.product_id] || []).push(balance);
+    });
+    const productRows = [];
+    products.forEach((product) => {
+      const balances = balancesByProduct[product.id] || [null];
+      balances.forEach((balance) => {
+        const storeId = balance ? balance.store_id : "";
+        const price = priceByProductStore[`${product.id}|${storeId}`] || latestPriceByProduct[product.id] || {};
+        productRows.push([
+          backupAt,
+          product.sku,
+          product.barcode,
+          product.name,
+          product.category,
+          product.unit,
+          product.hsn_code,
+          product.tax_percent,
+          product.is_active,
+          storeId,
+          balance ? balance.location : "",
+          balance ? Number(balance.qty_on_hand || 0) : 0,
+          balance ? Number(balance.reorder_level || 0) : 0,
+          price.mrp != null ? Number(price.mrp) : "",
+          price.selling_price != null ? Number(price.selling_price) : "",
+          price.cost_price != null ? Number(price.cost_price) : "",
+          price.effective_from || ""
+        ]);
+      });
+    });
+
+    const token = await googleAccessToken();
+    await Promise.all([
+      replaceSheetRows(token, "Sales", [
+        ["Backup At", "Invoice No", "Store ID", "Channel", "Customer Name", "Status", "Taxable Amount", "GST Amount", "CGST Amount", "SGST Amount", "Prices Include GST", "Discount Amount", "Manual Discount Amount", "Promo Code", "Promo Discount Amount", "Total Amount", "Delivery Address", "Delivery City", "Delivery Pincode", "Sold By User ID", "Sold By Name", "Sale Date & Time"],
+        ...orders.map((order) => [backupAt, order.order_no, order.store_id, order.channel, order.customer_name, order.status, order.subtotal, order.tax_amount, order.cgst_amount, order.sgst_amount, order.prices_include_gst, order.discount_amount, order.manual_discount_amount || 0, order.promo_code || "", order.promo_discount_amount || 0, order.total_amount, order.delivery_address, order.delivery_city, order.delivery_pincode, order.sold_by_user_id, order.sold_by_name, order.created_at])
+      ]),
+      replaceSheetRows(token, "Sales Items", [
+        ["Backup At", "Invoice No", "SKU", "Item Name", "Quantity", "Unit Price", "Line Total", "GST Rate %", "Taxable Amount", "CGST Amount", "SGST Amount", "Price Includes GST"],
+        ...orderItems.map((item) => {
+          const order = orders.find((row) => row.id === item.order_id);
+          return [backupAt, order ? order.order_no : "", item.sku, item.name, item.quantity, item.unit_price, item.line_total, item.tax_percent, item.taxable_amount, item.cgst_amount, item.sgst_amount, item.price_includes_gst];
+        })
+      ]),
+      replaceSheetRows(token, "Expenses", [
+        ["Backup At", "Expense ID", "Store ID", "Expense Date", "Expense Date & Time", "Category", "Description", "Amount", "Payment Mode", "Recorded By User ID", "Recorded By Name", "Recorded At"],
+        ...expenses.map((expense) => [backupAt, expense.id, expense.store_id, expense.expense_date, expense.expense_at, expense.category, expense.description, expense.amount, expense.payment_mode, expense.recorded_by_user_id, expense.recorded_by_name, expense.created_at])
+      ]),
+      replaceSheetRows(token, "Customers", [
+        ["Backup At", "Customer Code", "Name", "Phone", "Place", "Full Address", "City", "Pincode", "Customer Created At"],
+        ...customers.map((customer) => [backupAt, customer.customer_code, customer.name, customer.phone, customer.place, customer.full_address, customer.city, customer.pincode, customer.created_at])
+      ]),
+      replaceSheetRows(token, "Products", [
+        ["Backup At", "SKU", "Barcode", "Name", "Category", "Unit", "HSN Code", "GST Rate %", "Active", "Store ID", "Location", "Available Qty", "Reorder Level", "MRP", "Selling Price", "Cost Price", "Price Effective From"],
+        ...productRows
+      ]),
+      replaceSheetRows(token, "Order Payments", [
+        ["Backup At", "Invoice No", "Payment Mode", "Amount", "Paid At"],
+        ...orderPayments.map((payment) => {
+          const order = orders.find((row) => row.id === payment.order_id);
+          return [backupAt, order ? order.order_no : "", payment.mode, payment.amount, payment.created_at];
+        })
+      ]),
+      replaceSheetRows(token, "Cash Sessions", [
+        ["Backup At", "Store ID", "Opening Amount", "Closing Amount", "Opened At", "Closed At", "Opened By", "Closed By", "Status"],
+        ...cashSessions.map((session) => [backupAt, session.store_id, session.opening_amount, session.closing_amount, session.opened_at, session.closed_at, session.opened_by_name, session.closed_by_name, session.status])
+      ]),
+      replaceSheetRows(token, "Promo Codes", [
+        ["Backup At", "Code", "Description", "Discount Type", "Discount Value", "Min Order Amount", "Max Discount", "Usage Limit", "Used Count", "Start Date", "End Date", "Active", "Created At"],
+        ...promoCodes.map((promo) => [backupAt, promo.code, promo.description, promo.discount_type, promo.discount_value, promo.min_order_amount, promo.max_discount_amount, promo.usage_limit, promo.used_count, promo.start_date, promo.end_date, promo.is_active, promo.created_at])
+      ]),
+      replaceSheetRows(token, "Purchase Orders", [
+        ["Backup At", "Purchase ID", "Store ID", "Date", "Place", "Bill No", "Shop Name", "ID", "Total Amount Paid", "Misc", "Comments", "Recorded By User ID", "Recorded By Name", "Recorded At"],
+        ...purchaseOrders.map((po) => [backupAt, po.id, po.store_id, po.po_date, po.place, po.bill_no, po.shop_name, po.ref_id, po.total_amount, po.misc, po.comments, po.recorded_by_user_id, po.recorded_by_name, po.created_at])
+      ]),
+      replaceSheetRows(token, "Memberships", [
+        ["Backup At", "Name", "Mobile", "Tier", "Wallet Balance", "Referral Code", "Eligible Purchases", "Successful Referrals", "Wallet Expires", "Joined At", "Last Purchase At"],
+        ...members.map((member) => [backupAt, member.name, member.phone, member.tier, member.wallet_balance, member.referral_code, member.eligible_purchase_count, member.successful_referral_count, member.wallet_expires_at, member.joined_at, member.last_purchase_at])
+      ]),
+      replaceSheetRows(token, "Wallet Transactions", [
+        ["Backup At", "Member Mobile", "Order ID", "Transaction Type", "Amount", "Balance After", "Created At"],
+        ...walletTransactions.map((transaction) => {
+          const member = members.find((row) => row.id === transaction.member_id);
+          return [backupAt, member ? member.phone : "", transaction.order_id, transaction.transaction_type, transaction.amount, transaction.balance_after, transaction.created_at];
+        })
+      ]),
+      replaceSheetRows(token, "Referrals", [
+        ["Backup At", "Referrer Mobile", "Referred Mobile", "Successful Order ID", "Status", "Completed At", "Created At"],
+        ...referrals.map((referral) => {
+          const referrer = members.find((row) => row.id === referral.referrer_member_id);
+          const referred = members.find((row) => row.id === referral.referred_member_id);
+          return [backupAt, referrer ? referrer.phone : "", referred ? referred.phone : "", referral.successful_order_id, referral.status, referral.completed_at, referral.created_at];
+        })
+      ]),
+      replaceSheetRows(token, "Membership Settings", [
+        ["Backup At", "Business ID", "First Purchase Credit %", "Later Purchase Credit %", "Referral Credit %", "Wallet Redemption %", "Wallet Inactivity Expiry (Months)", "Updated At"],
+        ...membershipSettings.map((setting) => [backupAt, setting.business_id, setting.regular_first_purchase_reward_percent, setting.regular_repeat_purchase_reward_percent, setting.referral_reward_percent, setting.regular_wallet_redemption_percent, setting.regular_wallet_expiry_months, setting.updated_at])
+      ])
+    ]);
+    await recordSyncRuns(businessIds, { status: "success", salesRows, expenseRows, customerRows });
+    return { ok: true, mode: "full_snapshot", sales_rows: orders.length, expense_rows: expenses.length, customer_rows: customers.length, product_rows: productRows.length, payment_rows: orderPayments.length, cash_session_rows: cashSessions.length, promo_code_rows: promoCodes.length, purchase_order_rows: purchaseOrders.length };
+  } catch (error) {
+    const errorMessage = String(error.message || error).slice(0, 500);
+    await recordSyncRuns(businessIds, { status: "error", salesRows, expenseRows, customerRows, errorMessage });
+    throw new Error(errorMessage);
+  }
+}
+
+async function backupHandler(req, res) {
+  const secret = process.env.CRON_SECRET;
+  if (!secret || req.headers.authorization !== `Bearer ${secret}`) {
+    res.status(401).json({ error: "unauthorized" });
+    return;
+  }
+  try {
+    res.status(200).json(await runBackup());
+  } catch (error) {
+    res.status(500).json({ error: "backup_failed", message: String(error.message || error) });
+  }
+};
+
+module.exports = backupHandler;
+module.exports.runBackup = runBackup;
