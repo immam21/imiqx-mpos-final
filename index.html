@@ -2234,7 +2234,7 @@
       posRerender();
       if (c.searched && !c.existing) {
         const nameEl = document.getElementById("pos-cust-name");
-        if (nameEl) nameEl.focus();
+        focusUnlessTouch(nameEl);
       }
     }
   }
@@ -2613,6 +2613,16 @@
     return "Rs " + Number(n || 0).toFixed(2);
   }
 
+  // On touch devices, auto-focusing a field pops the on-screen keyboard; skip it
+  // so the keypad only appears when the user taps the field.
+  function isTouchDevice() {
+    return (typeof navigator !== "undefined" && Number(navigator.maxTouchPoints) > 0)
+      || (typeof window !== "undefined" && (("ontouchstart" in window) || (window.matchMedia && window.matchMedia("(pointer: coarse)").matches)));
+  }
+  function focusUnlessTouch(el) {
+    if (el && !isTouchDevice()) el.focus();
+  }
+
   const LABEL_SIZES = {
     "25x20": { width: 25, height: 20, businessY: 2.4, businessSize: 5, nameY: 4.3, nameSize: 4.2, nameLength: 20, codeY: 6.1, codeSize: 4, mrpY: 9, priceY: 11.4, mrpSize: 4.4, offerSize: 7, priceMaxWidth: 21, tagX: 14, tagY: 6.8, tagWidth: 8.5, offerLabelY: 7.9, offerPriceY: 11.7, barcodeX: 2, barcodeY: 12.1, barcodeWidth: 21, barcodeHeight: 5.2, barcodeValueY: 18.3, barcodeValueSize: 4.5 },
     "50x25": { width: 50, height: 25, businessY: 3.2, businessSize: 8, nameY: 6.1, nameSize: 7, nameLength: 34, codeY: 8.7, codeSize: 5.5, mrpY: 12, priceY: 15.1, mrpSize: 6.5, offerSize: 10.5, priceMaxWidth: 46, tagX: 36.5, tagY: 9.2, tagWidth: 10.5, offerLabelY: 10.5, offerPriceY: 15.3, barcodeX: 4, barcodeY: 15.6, barcodeWidth: 42, barcodeHeight: 6.2, barcodeValueY: 23.6, barcodeValueSize: 6 },
@@ -2736,7 +2746,7 @@
       submitButton.textContent = action === "download" ? "Download PDF Labels" : "Create Print Labels";
     }
     document.getElementById("label-print-modal").classList.add("show");
-    document.getElementById("label-print-copies").focus();
+    focusUnlessTouch(document.getElementById("label-print-copies"));
   }
 
   function closeLabelPrintModal() {
@@ -2949,7 +2959,7 @@
         ${edit ? `<button class="btn primary" type="button" data-action="save-inventory-edit">Save Changes</button>` : `<button class="btn" type="button" data-action="add-stock">Add Stock</button><button class="btn" type="button" data-action="add-stock-download">Add & Download Label</button><button class="btn primary" type="button" data-action="add-stock-print">Add & Print Label</button>`}
       </div>`;
     document.getElementById("stock-modal").classList.add("show");
-    document.getElementById("stock-name").focus();
+    focusUnlessTouch(document.getElementById("stock-name"));
   }
 
   function closeStockModal() {
@@ -3234,7 +3244,7 @@
         <button class="btn primary" type="button" data-action="save-promo">${isEdit ? "Save Changes" : "Create Promo Code"}</button>
       </div>`;
     document.getElementById("promo-modal").classList.add("show");
-    document.getElementById("promo-code").focus();
+    focusUnlessTouch(document.getElementById("promo-code"));
   }
 
   function closePromoModal() {
@@ -3348,7 +3358,7 @@
         <button class="btn primary" type="button" data-action="save-purchase">${isEdit ? "Save Changes" : "Add Purchase"}</button>
       </div>`;
     document.getElementById("purchase-modal").classList.add("show");
-    document.getElementById("purchase-date").focus();
+    focusUnlessTouch(document.getElementById("purchase-date"));
   }
 
   function closePurchaseModal() {
@@ -5034,7 +5044,7 @@
       const cls = Number(p.qty) <= Number(p.reorder_level) ? "warn" : "good";
       const enc = encodeURIComponent(JSON.stringify({ sku: p.sku, name: p.name, hsn: p.hsn || "", tax_percent: p.tax_percent || 0, qty: p.qty || 0, price: p.price || 0, mrp: p.mrp || 0, cost_price: p.cost_price || 0, reorder_level: p.reorder_level || 0, location: p.location || "" }));
       const mrpCell = (p.mrp && p.mrp > (p.price || 0)) ? `<span style="text-decoration:line-through; color:var(--color-muted-foreground);">${money(p.mrp)}</span>` : money(p.mrp || p.price || 0);
-      return `<tr><td><input type="checkbox" class="label-select" data-product="${enc}" /></td><td class="mono">${p.sku}</td><td>${p.name}</td><td class="mono">${money(p.cost_price || 0)}</td><td class="mono">${mrpCell}</td><td class="mono">${money(p.price || 0)}</td><td>${p.qty}</td><td>${p.reorder_level}</td><td><span class="chip ${cls}">${Number(p.qty) <= Number(p.reorder_level) ? "Low" : "Healthy"}</span></td><td style="display:flex; gap:6px; flex-wrap:wrap;"><button class="btn" type="button" data-action="edit-inventory" data-product="${enc}">Edit</button><button class="btn" type="button" data-action="print-label" data-product="${enc}">Print</button><button class="btn" type="button" data-action="download-label" data-product="${enc}">Download PDF</button><button class="btn danger" type="button" data-action="delete-inventory" data-product="${enc}">Delete</button></td></tr>`;
+      return `<tr><td><input type="checkbox" class="label-select" data-product="${enc}" /></td><td class="mono">${p.sku}</td><td>${p.name}</td><td class="mono">${money(p.cost_price || 0)}</td><td class="mono">${mrpCell}</td><td class="mono">${money(p.price || 0)}</td><td>${p.qty}</td><td>${p.reorder_level}</td><td><span class="chip ${cls}">${Number(p.qty) <= Number(p.reorder_level) ? "Low" : "Healthy"}</span></td><td><div style="display:flex; gap:6px; flex-wrap:nowrap; white-space:nowrap;"><button class="btn compact" type="button" data-action="edit-inventory" data-product="${enc}">Edit</button><button class="btn compact" type="button" data-action="print-label" data-product="${enc}">Print</button><button class="btn compact" type="button" data-action="download-label" data-product="${enc}">PDF</button><button class="btn danger compact" type="button" data-action="delete-inventory" data-product="${enc}">Delete</button></div></td></tr>`;
     }).join("") || `<tr><td colspan="10">No stock data.</td></tr>`;
   }
 
@@ -5107,7 +5117,7 @@
             posAddItem();
           }
         });
-        scan.focus();
+        focusUnlessTouch(scan);
       }
 
       if (tabId === "store") {
