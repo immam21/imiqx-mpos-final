@@ -581,7 +581,7 @@ module.exports = async function handler(req, res) {
       }
       const member = (await sbSelect(
         "membership_members",
-        `select=id,name,phone,tier,wallet_balance,wallet_expires_at,referral_code,successful_referral_count&phone=eq.${encode(phone)}&limit=1`
+        `select=id,business_id,name,phone,tier,wallet_balance,wallet_expires_at,referral_code,successful_referral_count&phone=eq.${encode(phone)}&limit=1`
       ).catch(() => []))[0];
       if (!member) {
         sendJson(res, 200, { found: false });
@@ -591,8 +591,12 @@ module.exports = async function handler(req, res) {
         "membership_wallet_transactions",
         `select=transaction_type,amount,balance_after,created_at&member_id=eq.${member.id}&order=created_at.desc&limit=20`
       ).catch(() => []);
+      const biz = member.business_id
+        ? (await sbSelect("businesses", `select=legal_name&id=eq.${encode(member.business_id)}&limit=1`).catch(() => []))[0]
+        : null;
       sendJson(res, 200, {
         found: true,
+        business_name: (biz && biz.legal_name) || "",
         member: {
           name: member.name,
           phone: member.phone,
