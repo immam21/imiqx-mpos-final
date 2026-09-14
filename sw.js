@@ -1,4 +1,4 @@
-const CACHE = 'onecounter-v14';
+const CACHE = 'onecounter-v16';
 const ASSETS = ['./', './index.html', './login.html', './receipt.html', './wallet.html', './manifest.json', './icon.svg', './config.js', './pwa.js', './vendor/JsBarcode.all.min.js', './vendor/qrcode.min.js', './vendor/jspdf.umd.min.js', './vendor/html5-qrcode.min.js'];
 const OUTBOX_DB = 'onecounter-outbox';
 const OUTBOX_STORE = 'requests';
@@ -142,6 +142,20 @@ self.addEventListener('fetch', (event) => {
     );
     return;
   }
+
+  // Runtime config (backend URL etc.) must stay fresh: network-first, cache as
+  // offline fallback. Prevents a stale cached config.js from pinning an old API.
+  if (url.pathname.endsWith('/config.js') || url.pathname.endsWith('/config.local.js')) {
+    event.respondWith(
+      fetch(request).then((res) => {
+        const copy = res.clone();
+        caches.open(CACHE).then((cache) => cache.put(request, copy)).catch(() => {});
+        return res;
+      }).catch(() => caches.match(request))
+    );
+    return;
+  }
+
   event.respondWith(
     caches.match(request).then((cached) => cached || fetch(request))
   );
