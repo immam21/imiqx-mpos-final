@@ -5,5 +5,7 @@
 window.__ONECOUNTER_API_BASE_URL__ = "http://localhost:8787";
 window.__ONECOUNTER_BUSINESS_ID__ = "business-main";
 window.__ONECOUNTER_STORE_ID__ = "store-main";
+// Admin WhatsApp number (international format, digits only) for the login "Contact admin" link.
+window.__ONECOUNTER_ADMIN_WHATSAPP__ = "919876543210";
 window.__ONECOUNTER_SUPABASE_URL__ = "https://YOUR-PROJECT.supabase.co";
 window.__ONECOUNTER_SUPABASE_ANON_KEY__ = "YOUR_SUPABASE_ANON_KEY";

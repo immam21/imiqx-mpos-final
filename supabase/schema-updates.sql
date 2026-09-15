@@ -213,3 +213,14 @@ create table if not exists purchase_orders (
 	created_at timestamptz not null default now()
 );
 create index if not exists idx_purchase_orders_store_date on purchase_orders (store_id, po_date desc);
+
+-- Multi-tenant: link each app user to their business (and a default store) so the
+-- backend can resolve tenant context from the authenticated user, not the client header.
+alter table app_users add column if not exists business_id uuid references businesses(id) on delete set null;
+alter table app_users add column if not exists default_store_id uuid references stores(id) on delete set null;
+create index if not exists idx_app_users_business on app_users (business_id);
+
+-- Manual/online orders: shipping charges and courier tracking shown on the e-bill.
+alter table orders add column if not exists shipping_amount numeric(12,2) not null default 0;
+alter table orders add column if not exists tracking_number text;
+alter table orders add column if not exists courier text;

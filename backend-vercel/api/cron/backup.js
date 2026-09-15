@@ -90,8 +90,8 @@ async function runBackup() {
   let expenseRows = 0;
   let customerRows = 0;
   try {
-    const [orders, orderItems, expenses, customers, members, walletTransactions, referrals, membershipSettings, products, inventoryBalances, productPrices, orderPayments, cashSessions, promoCodes, purchaseOrders] = await Promise.all([
-      sbSelect("orders", "select=id,business_id,order_no,store_id,channel,customer_name,status,subtotal,tax_amount,cgst_amount,sgst_amount,prices_include_gst,discount_amount,manual_discount_amount,promo_code,promo_discount_amount,total_amount,delivery_address,delivery_city,delivery_pincode,sold_by_user_id,sold_by_name,created_at&order=created_at.desc"),
+    const [orders, orderItems, expenses, customers, members, walletTransactions, referrals, membershipSettings, products, inventoryBalances, productPrices, orderPayments, cashSessions, promoCodes, purchaseOrders, businesses, stores, appUsers] = await Promise.all([
+      sbSelect("orders", "select=id,business_id,order_no,store_id,channel,customer_name,status,subtotal,tax_amount,cgst_amount,sgst_amount,prices_include_gst,discount_amount,manual_discount_amount,promo_code,promo_discount_amount,total_amount,shipping_amount,tracking_number,courier,delivery_address,delivery_city,delivery_pincode,sold_by_user_id,sold_by_name,created_at&order=created_at.desc"),
       sbSelect("order_items", "select=order_id,sku,name,quantity,unit_price,line_total,tax_percent,taxable_amount,cgst_amount,sgst_amount,price_includes_gst"),
       sbSelect("expenses", "select=business_id,id,store_id,expense_date,expense_at,category,description,amount,payment_mode,recorded_by_user_id,recorded_by_name,created_at&order=expense_at.desc"),
       sbSelect("customers", "select=business_id,customer_code,name,phone,place,full_address,city,pincode,created_at&order=created_at.desc"),
@@ -105,7 +105,10 @@ async function runBackup() {
       sbSelect("order_payments", "select=business_id,order_id,mode,amount,created_at&order=created_at.desc").catch(() => []),
       sbSelect("cash_sessions", "select=business_id,store_id,opening_amount,closing_amount,opened_at,closed_at,opened_by_name,closed_by_name,status&order=opened_at.desc").catch(() => []),
       sbSelect("promo_codes", "select=business_id,code,description,discount_type,discount_value,min_order_amount,max_discount_amount,usage_limit,used_count,start_date,end_date,is_active,created_at&order=created_at.desc").catch(() => []),
-      sbSelect("purchase_orders", "select=business_id,id,store_id,po_date,place,bill_no,shop_name,ref_id,total_amount,misc,comments,recorded_by_user_id,recorded_by_name,created_at&order=po_date.desc,created_at.desc").catch(() => [])
+      sbSelect("purchase_orders", "select=business_id,id,store_id,po_date,place,bill_no,shop_name,ref_id,total_amount,misc,comments,recorded_by_user_id,recorded_by_name,created_at&order=po_date.desc,created_at.desc").catch(() => []),
+      sbSelect("businesses", "select=id,code,legal_name,gstin,pan,invoice_prefix,timezone,is_active,created_at&order=created_at.asc").catch(() => []),
+      sbSelect("stores", "select=id,business_id,code,name,store_type,city,state,is_active,created_at&order=created_at.asc").catch(() => []),
+      sbSelect("app_users", "select=id,email,full_name,role,business_id,default_store_id,is_active,created_at&order=created_at.asc").catch(() => [])
     ]);
     businessIds = Array.from(new Set([...orders, ...expenses, ...customers].map((row) => row.business_id).filter(Boolean)));
     salesRows = orders.length;
@@ -156,8 +159,8 @@ async function runBackup() {
     const token = await googleAccessToken();
     await Promise.all([
       replaceSheetRows(token, "Sales", [
-        ["Backup At", "Invoice No", "Store ID", "Channel", "Customer Name", "Status", "Taxable Amount", "GST Amount", "CGST Amount", "SGST Amount", "Prices Include GST", "Discount Amount", "Manual Discount Amount", "Promo Code", "Promo Discount Amount", "Total Amount", "Delivery Address", "Delivery City", "Delivery Pincode", "Sold By User ID", "Sold By Name", "Sale Date & Time"],
-        ...orders.map((order) => [backupAt, order.order_no, order.store_id, order.channel, order.customer_name, order.status, order.subtotal, order.tax_amount, order.cgst_amount, order.sgst_amount, order.prices_include_gst, order.discount_amount, order.manual_discount_amount || 0, order.promo_code || "", order.promo_discount_amount || 0, order.total_amount, order.delivery_address, order.delivery_city, order.delivery_pincode, order.sold_by_user_id, order.sold_by_name, order.created_at])
+        ["Backup At", "Invoice No", "Store ID", "Channel", "Customer Name", "Status", "Taxable Amount", "GST Amount", "CGST Amount", "SGST Amount", "Prices Include GST", "Discount Amount", "Manual Discount Amount", "Promo Code", "Promo Discount Amount", "Shipping Amount", "Total Amount", "Courier", "Tracking Number", "Delivery Address", "Delivery City", "Delivery Pincode", "Sold By User ID", "Sold By Name", "Sale Date & Time"],
+        ...orders.map((order) => [backupAt, order.order_no, order.store_id, order.channel, order.customer_name, order.status, order.subtotal, order.tax_amount, order.cgst_amount, order.sgst_amount, order.prices_include_gst, order.discount_amount, order.manual_discount_amount || 0, order.promo_code || "", order.promo_discount_amount || 0, order.shipping_amount || 0, order.total_amount, order.courier || "", order.tracking_number || "", order.delivery_address, order.delivery_city, order.delivery_pincode, order.sold_by_user_id, order.sold_by_name, order.created_at])
       ]),
       replaceSheetRows(token, "Sales Items", [
         ["Backup At", "Invoice No", "SKU", "Item Name", "Quantity", "Unit Price", "Line Total", "GST Rate %", "Taxable Amount", "CGST Amount", "SGST Amount", "Price Includes GST"],
@@ -197,6 +200,18 @@ async function runBackup() {
         ["Backup At", "Purchase ID", "Store ID", "Date", "Place", "Bill No", "Shop Name", "ID", "Total Amount Paid", "Misc", "Comments", "Recorded By User ID", "Recorded By Name", "Recorded At"],
         ...purchaseOrders.map((po) => [backupAt, po.id, po.store_id, po.po_date, po.place, po.bill_no, po.shop_name, po.ref_id, po.total_amount, po.misc, po.comments, po.recorded_by_user_id, po.recorded_by_name, po.created_at])
       ]),
+      replaceSheetRows(token, "Businesses", [
+        ["Backup At", "Business ID", "Code", "Legal Name", "GSTIN", "PAN", "Invoice Prefix", "Timezone", "Active", "Created At"],
+        ...businesses.map((b) => [backupAt, b.id, b.code, b.legal_name, b.gstin, b.pan, b.invoice_prefix, b.timezone, b.is_active, b.created_at])
+      ]),
+      replaceSheetRows(token, "Stores", [
+        ["Backup At", "Store ID", "Business", "Code", "Name", "Type", "City", "State", "Active", "Created At"],
+        ...stores.map((s) => { const b = businesses.find((x) => x.id === s.business_id); return [backupAt, s.id, b ? b.legal_name : s.business_id, s.code, s.name, s.store_type, s.city, s.state, s.is_active, s.created_at]; })
+      ]),
+      replaceSheetRows(token, "Users", [
+        ["Backup At", "Email", "Full Name", "Role", "Business", "Default Store", "Active", "Created At"],
+        ...appUsers.map((u) => { const b = businesses.find((x) => x.id === u.business_id); const st = stores.find((x) => x.id === u.default_store_id); return [backupAt, u.email, u.full_name, u.role, b ? b.legal_name : "", st ? st.name : "", u.is_active, u.created_at]; })
+      ]),
       replaceSheetRows(token, "Memberships", [
         ["Backup At", "Name", "Mobile", "Tier", "Wallet Balance", "Referral Code", "Eligible Purchases", "Successful Referrals", "Wallet Expires", "Joined At", "Last Purchase At"],
         ...members.map((member) => [backupAt, member.name, member.phone, member.tier, member.wallet_balance, member.referral_code, member.eligible_purchase_count, member.successful_referral_count, member.wallet_expires_at, member.joined_at, member.last_purchase_at])
@@ -222,7 +237,7 @@ async function runBackup() {
       ])
     ]);
     await recordSyncRuns(businessIds, { status: "success", salesRows, expenseRows, customerRows });
-    return { ok: true, mode: "full_snapshot", sales_rows: orders.length, expense_rows: expenses.length, customer_rows: customers.length, product_rows: productRows.length, payment_rows: orderPayments.length, cash_session_rows: cashSessions.length, promo_code_rows: promoCodes.length, purchase_order_rows: purchaseOrders.length };
+    return { ok: true, mode: "full_snapshot", sales_rows: orders.length, expense_rows: expenses.length, customer_rows: customers.length, product_rows: productRows.length, payment_rows: orderPayments.length, cash_session_rows: cashSessions.length, promo_code_rows: promoCodes.length, purchase_order_rows: purchaseOrders.length, business_rows: businesses.length, store_rows: stores.length, user_rows: appUsers.length };
   } catch (error) {
     const errorMessage = String(error.message || error).slice(0, 500);
     await recordSyncRuns(businessIds, { status: "error", salesRows, expenseRows, customerRows, errorMessage });

@@ -199,11 +199,59 @@ async function resolveStoreId(code, businessId) {
 }
 
 async function resolveContext(req) {
+  // Prefer the authenticated user's own business so tenants can't read another
+  // tenant's data by changing the X-Business-Id header. Falls back to header/env
+  // for local dev, public tooling, and users with no business link yet.
+  const tenant = await resolveUserTenant(req).catch(() => null);
+  if (tenant && tenant.businessId) {
+    await assertBusinessActive(tenant.businessId);
+    let storeId = null;
+    const storeCode = getStoreCode(req);
+    try {
+      // Honor a store override only if that store belongs to the user's business.
+      storeId = await resolveStoreId(storeCode, tenant.businessId);
+    } catch (_) {
+      storeId = tenant.defaultStoreId || null;
+    }
+    if (!storeId) storeId = tenant.defaultStoreId || null;
+    if (!storeId) {
+      const firstStore = (await sbSelect("stores", `select=id&business_id=eq.${encode(tenant.businessId)}&order=created_at.asc&limit=1`).catch(() => []))[0];
+      storeId = firstStore ? firstStore.id : null;
+    }
+    return { businessCode: getBusinessCode(req), storeCode, businessId: tenant.businessId, storeId };
+  }
   const businessCode = getBusinessCode(req);
   const storeCode = getStoreCode(req);
   const businessId = await resolveBusinessId(businessCode);
+  await assertBusinessActive(businessId);
   const storeId = await resolveStoreId(storeCode, businessId);
   return { businessCode, storeCode, businessId, storeId };
+}
+
+// Deactivated tenants cannot use the app; block their API access with a clear error.
+const businessActiveCache = new Map();
+async function assertBusinessActive(businessId) {
+  if (!businessId) return;
+  if (!businessActiveCache.has(businessId)) {
+    const rows = await sbSelect("businesses", `select=is_active&id=eq.${encode(businessId)}&limit=1`).catch(() => []);
+    businessActiveCache.set(businessId, rows.length ? rows[0].is_active !== false : true);
+  }
+  if (businessActiveCache.get(businessId) === false) {
+    throw new Error("business_inactive");
+  }
+}
+
+// Resolve the logged-in user's business/default store from their app_users row.
+async function resolveUserTenant(req) {
+  const actor = await resolveActor(req);
+  if (!actor || !actor.id) return null;
+  const rows = await sbSelect(
+    "app_users",
+    `select=business_id,default_store_id&id=eq.${encode(actor.id)}&limit=1`
+  ).catch(() => []);
+  const link = rows[0];
+  if (!link || !link.business_id) return null;
+  return { businessId: link.business_id, defaultStoreId: link.default_store_id || null };
 }
 
 // -------------------------------------------------------------------------
@@ -235,24 +283,33 @@ function issueMockToken(user) {
 }
 
 async function resolveActor(req) {
+  if (req.__actorResolved) return req.__actor;
   const token = String(req.headers.authorization || "").replace(/^Bearer\s+/i, "").trim();
-  if (!token) return null;
-  if (getAuthMode() === "local_db") {
-    return mockAccessSessions[token] || null;
+  let actor = null;
+  if (token) {
+    if (getAuthMode() === "local_db") {
+      actor = mockAccessSessions[token] || null;
+    } else {
+      const supabaseUrl = process.env.SUPABASE_URL;
+      const pub = process.env.SUPABASE_ANON_KEY || process.env.SUPABASE_PUBLISHABLE_KEY;
+      if (supabaseUrl && pub) {
+        const response = await fetch(`${supabaseUrl}/auth/v1/user`, {
+          headers: { apikey: pub, Authorization: `Bearer ${token}` }
+        }).catch(() => null);
+        if (response && response.ok) {
+          const user = await response.json();
+          actor = {
+            id: user.id,
+            email: user.email || "",
+            name: (user.user_metadata && user.user_metadata.full_name) || user.email || ""
+          };
+        }
+      }
+    }
   }
-  const supabaseUrl = process.env.SUPABASE_URL;
-  const pub = process.env.SUPABASE_ANON_KEY || process.env.SUPABASE_PUBLISHABLE_KEY;
-  if (!supabaseUrl || !pub) return null;
-  const response = await fetch(`${supabaseUrl}/auth/v1/user`, {
-    headers: { apikey: pub, Authorization: `Bearer ${token}` }
-  });
-  if (!response.ok) return null;
-  const user = await response.json();
-  return {
-    id: user.id,
-    email: user.email || "",
-    name: (user.user_metadata && user.user_metadata.full_name) || user.email || ""
-  };
+  req.__actorResolved = true;
+  req.__actor = actor;
+  return actor;
 }
 
 async function supabasePasswordLogin(email, password) {
@@ -297,6 +354,19 @@ async function supabaseLogout(accessToken) {
 // -------------------------------------------------------------------------
 const ADMIN_CODE = process.env.ADMIN_USER_CODE || "1521";
 
+// Super-admin gate for /v1/admin/* onboarding. Code may arrive in the body (POST)
+// or as an ?admin_code= query param (GET).
+function adminCodeFrom(req, body) {
+  const url = new URL(req.url, "http://localhost");
+  return String((body && body.admin_code) || url.searchParams.get("admin_code") || "");
+}
+function isSuperAdmin(req, body) {
+  return adminCodeFrom(req, body) === ADMIN_CODE;
+}
+function slugCode(value) {
+  return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48);
+}
+
 function adminHeaders() {
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SECRET_KEY;
   return { apikey: key, Authorization: `Bearer ${key}`, "Content-Type": "application/json" };
@@ -340,6 +410,24 @@ async function adminDeleteUser(userId) {
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
     return { error: true, message: data.msg || data.error || "delete_failed" };
+  }
+  return { error: false };
+}
+
+// Update a Supabase auth user (password reset and/or role metadata).
+async function adminUpdateUser(userId, patch) {
+  const supabaseUrl = process.env.SUPABASE_URL;
+  const body = {};
+  if (patch.password) body.password = patch.password;
+  if (patch.role) body.user_metadata = { role: patch.role };
+  const res = await fetch(`${supabaseUrl}/auth/v1/admin/users/${encode(userId)}`, {
+    method: "PUT",
+    headers: adminHeaders(),
+    body: JSON.stringify(body)
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    return { error: true, message: data.msg || data.error_description || data.error || "update_failed" };
   }
   return { error: false };
 }
@@ -448,16 +536,51 @@ module.exports = async function handler(req, res) {
       return;
     }
 
+    // Public: stores available to a user (by email) for the login store picker.
+    if (pathname === "/v1/auth/stores" && req.method === "GET") {
+      const url = new URL(req.url, "http://localhost");
+      const email = String(url.searchParams.get("email") || "").trim().toLowerCase();
+      if (!email) { sendJson(res, 200, { items: [] }); return; }
+      const user = (await sbSelect("app_users", `select=business_id,default_store_id&email=eq.${encode(email)}&limit=1`).catch(() => []))[0];
+      if (!user || !user.business_id) { sendJson(res, 200, { items: [] }); return; }
+      const stores = await sbSelect(
+        "stores",
+        `select=code,name,is_active&business_id=eq.${encode(user.business_id)}&order=created_at.asc`
+      ).catch(() => []);
+      const defaultStore = user.default_store_id
+        ? (await sbSelect("stores", `select=code&id=eq.${encode(user.default_store_id)}&limit=1`).catch(() => []))[0]
+        : null;
+      sendJson(res, 200, {
+        items: stores.filter((s) => s.is_active !== false).map((s) => ({ code: s.code, name: s.name })),
+        default_store_code: defaultStore ? defaultStore.code : ""
+      });
+      return;
+    }
+
     // ------------------------- User admin (add/remove) -------------------------
     // Gated by a hardcoded admin code. Uses the Supabase Admin API (service role).
     if (pathname === "/v1/admin/users" && req.method === "GET") {
       const users = await adminListUsers();
+      // Merge tenant link (business) from app_users so the console can show it.
+      const links = await sbSelect("app_users", "select=id,email,role,business_id,default_store_id").catch(() => []);
+      const businesses = await sbSelect("businesses", "select=id,code,legal_name").catch(() => []);
+      const bizById = {};
+      businesses.forEach((b) => { bizById[b.id] = b; });
+      const linkByEmail = {};
+      links.forEach((l) => { linkByEmail[String(l.email || "").toLowerCase()] = l; });
       sendJson(res, 200, {
-        users: users.map((u) => ({
-          id: u.id,
-          email: u.email,
-          role: (u.user_metadata && u.user_metadata.role) || ""
-        }))
+        users: users.map((u) => {
+          const link = linkByEmail[String(u.email || "").toLowerCase()] || {};
+          const biz = link.business_id ? bizById[link.business_id] : null;
+          return {
+            id: u.id,
+            email: u.email,
+            role: link.role || (u.user_metadata && u.user_metadata.role) || "",
+            business_id: link.business_id || "",
+            business_code: biz ? biz.code : "",
+            business_name: biz ? biz.legal_name : ""
+          };
+        })
       });
       return;
     }
@@ -472,11 +595,18 @@ module.exports = async function handler(req, res) {
         sendJson(res, 400, { error: "email and password required" });
         return;
       }
-      const result = await adminCreateUser(body.email, body.password, body.role);
+      const role = ["cashier", "manager", "admin"].includes(String(body.role)) ? String(body.role) : "manager";
+      const result = await adminCreateUser(body.email, body.password, role);
       if (result.error) {
         sendJson(res, 400, { error: "create_failed", message: result.message });
         return;
       }
+      // Link the new user to their tenant (business + optional default store + role).
+      const patch = { role };
+      if (body.business_id) patch.business_id = String(body.business_id);
+      if (body.default_store_id) patch.default_store_id = String(body.default_store_id);
+      if (body.full_name) patch.full_name = String(body.full_name);
+      await sbUpdate("app_users", `email=eq.${encode(String(body.email).toLowerCase())}`, patch).catch(() => {});
       sendJson(res, 201, { status: "created", email: body.email });
       return;
     }
@@ -500,6 +630,197 @@ module.exports = async function handler(req, res) {
       return;
     }
 
+    // ------------------------- Admin: tenants (businesses) -------------------------
+    if (pathname === "/v1/admin/businesses" && req.method === "GET") {
+      if (!isSuperAdmin(req)) {
+        sendJson(res, 403, { error: "invalid_admin_code" });
+        return;
+      }
+      const rows = await sbSelect(
+        "businesses",
+        "select=id,code,legal_name,gstin,pan,invoice_prefix,timezone,is_active,created_at&order=created_at.desc"
+      ).catch(() => []);
+      const stores = await sbSelect("stores", "select=business_id").catch(() => []);
+      const counts = {};
+      stores.forEach((s) => { counts[s.business_id] = (counts[s.business_id] || 0) + 1; });
+      sendJson(res, 200, { items: rows.map((b) => ({ ...b, store_count: counts[b.id] || 0 })) });
+      return;
+    }
+
+    if (pathname === "/v1/admin/businesses" && req.method === "POST") {
+      const body = await parseBody(req);
+      if (!isSuperAdmin(req, body)) {
+        sendJson(res, 403, { error: "invalid_admin_code", message: "Invalid admin code." });
+        return;
+      }
+      const legalName = String(body.legal_name || "").trim();
+      const code = slugCode(body.code || legalName);
+      if (!legalName || !code) {
+        sendJson(res, 400, { error: "legal_name and code required" });
+        return;
+      }
+      const existing = await sbSelect("businesses", `select=id&code=eq.${encode(code)}&limit=1`).catch(() => []);
+      if (existing.length) {
+        sendJson(res, 409, { error: "code_exists", message: "A business with this code already exists." });
+        return;
+      }
+      const inserted = await sbInsert("businesses", [{
+        code,
+        legal_name: legalName,
+        gstin: String(body.gstin || "").trim() || null,
+        pan: String(body.pan || "").trim() || null,
+        invoice_prefix: String(body.invoice_prefix || "").trim() || null,
+        timezone: String(body.timezone || "").trim() || "Asia/Kolkata",
+        is_active: true
+      }]);
+      sendJson(res, 201, { status: "created", business: inserted[0] || null });
+      return;
+    }
+
+    // ------------------------- Admin: stores -------------------------
+    if (pathname === "/v1/admin/stores" && req.method === "GET") {
+      if (!isSuperAdmin(req)) {
+        sendJson(res, 403, { error: "invalid_admin_code" });
+        return;
+      }
+      const url = new URL(req.url, "http://localhost");
+      const businessId = String(url.searchParams.get("business_id") || "").trim();
+      if (!businessId) {
+        sendJson(res, 400, { error: "business_id required" });
+        return;
+      }
+      const rows = await sbSelect(
+        "stores",
+        `select=id,code,name,store_type,city,state,is_active,created_at&business_id=eq.${encode(businessId)}&order=created_at.desc`
+      ).catch(() => []);
+      sendJson(res, 200, { items: rows });
+      return;
+    }
+
+    if (pathname === "/v1/admin/stores" && req.method === "POST") {
+      const body = await parseBody(req);
+      if (!isSuperAdmin(req, body)) {
+        sendJson(res, 403, { error: "invalid_admin_code", message: "Invalid admin code." });
+        return;
+      }
+      const businessId = String(body.business_id || "").trim();
+      const name = String(body.name || "").trim();
+      const code = slugCode(body.code || name);
+      if (!businessId || !name || !code) {
+        sendJson(res, 400, { error: "business_id, name and code required" });
+        return;
+      }
+      const existing = await sbSelect("stores", `select=id&business_id=eq.${encode(businessId)}&code=eq.${encode(code)}&limit=1`).catch(() => []);
+      if (existing.length) {
+        sendJson(res, 409, { error: "code_exists", message: "A store with this code already exists for the business." });
+        return;
+      }
+      const inserted = await sbInsert("stores", [{
+        business_id: businessId,
+        code,
+        name,
+        store_type: String(body.store_type || "retail").trim() || "retail",
+        city: String(body.city || "").trim() || null,
+        state: String(body.state || "").trim() || null,
+        is_active: true
+      }]);
+      sendJson(res, 201, { status: "created", store: inserted[0] || null });
+      return;
+    }
+
+    if (pathname === "/v1/admin/businesses/update" && req.method === "POST") {
+      const body = await parseBody(req);
+      if (!isSuperAdmin(req, body)) { sendJson(res, 403, { error: "invalid_admin_code" }); return; }
+      const id = String(body.id || "").trim();
+      if (!id) { sendJson(res, 400, { error: "id required" }); return; }
+      const patch = {};
+      if (body.legal_name !== undefined) patch.legal_name = String(body.legal_name || "").trim();
+      if (body.gstin !== undefined) patch.gstin = String(body.gstin || "").trim() || null;
+      if (body.pan !== undefined) patch.pan = String(body.pan || "").trim() || null;
+      if (body.invoice_prefix !== undefined) patch.invoice_prefix = String(body.invoice_prefix || "").trim() || null;
+      if (body.timezone !== undefined) patch.timezone = String(body.timezone || "").trim() || "Asia/Kolkata";
+      if (body.is_active !== undefined) patch.is_active = Boolean(body.is_active);
+      await sbUpdate("businesses", `id=eq.${encode(id)}`, patch);
+      businessCache.clear();
+      businessActiveCache.clear();
+      sendJson(res, 200, { status: "updated", id });
+      return;
+    }
+
+    if (pathname === "/v1/admin/businesses/delete" && req.method === "POST") {
+      const body = await parseBody(req);
+      if (!isSuperAdmin(req, body)) { sendJson(res, 403, { error: "invalid_admin_code" }); return; }
+      const id = String(body.id || "").trim();
+      if (!id) { sendJson(res, 400, { error: "id required" }); return; }
+      await sbDelete("businesses", `id=eq.${encode(id)}`);
+      businessCache.clear();
+      storeCache.clear();
+      businessActiveCache.clear();
+      sendJson(res, 200, { status: "deleted", id });
+      return;
+    }
+
+    if (pathname === "/v1/admin/stores/update" && req.method === "POST") {
+      const body = await parseBody(req);
+      if (!isSuperAdmin(req, body)) { sendJson(res, 403, { error: "invalid_admin_code" }); return; }
+      const id = String(body.id || "").trim();
+      if (!id) { sendJson(res, 400, { error: "id required" }); return; }
+      const patch = {};
+      if (body.name !== undefined) patch.name = String(body.name || "").trim();
+      if (body.store_type !== undefined) patch.store_type = String(body.store_type || "retail").trim() || "retail";
+      if (body.city !== undefined) patch.city = String(body.city || "").trim() || null;
+      if (body.state !== undefined) patch.state = String(body.state || "").trim() || null;
+      if (body.is_active !== undefined) patch.is_active = Boolean(body.is_active);
+      await sbUpdate("stores", `id=eq.${encode(id)}`, patch);
+      storeCache.clear();
+      sendJson(res, 200, { status: "updated", id });
+      return;
+    }
+
+    if (pathname === "/v1/admin/stores/delete" && req.method === "POST") {
+      const body = await parseBody(req);
+      if (!isSuperAdmin(req, body)) { sendJson(res, 403, { error: "invalid_admin_code" }); return; }
+      const id = String(body.id || "").trim();
+      if (!id) { sendJson(res, 400, { error: "id required" }); return; }
+      await sbDelete("stores", `id=eq.${encode(id)}`);
+      storeCache.clear();
+      sendJson(res, 200, { status: "deleted", id });
+      return;
+    }
+
+    if (pathname === "/v1/admin/users/update" && req.method === "POST") {
+      const body = await parseBody(req);
+      if (!isSuperAdmin(req, body)) { sendJson(res, 403, { error: "invalid_admin_code" }); return; }
+      const userId = String(body.user_id || "").trim();
+      if (!userId) { sendJson(res, 400, { error: "user_id required" }); return; }
+      const role = ["cashier", "manager", "admin"].includes(String(body.role)) ? String(body.role) : null;
+      if (role) {
+        const upd = await adminUpdateUser(userId, { role });
+        if (upd.error) { sendJson(res, 400, { error: "update_failed", message: upd.message }); return; }
+      }
+      const patch = {};
+      if (role) patch.role = role;
+      if (body.business_id !== undefined) patch.business_id = String(body.business_id || "") || null;
+      if (body.default_store_id !== undefined) patch.default_store_id = String(body.default_store_id || "") || null;
+      if (Object.keys(patch).length) {
+        await sbUpdate("app_users", `id=eq.${encode(userId)}`, patch).catch(() => {});
+      }
+      sendJson(res, 200, { status: "updated", user_id: userId });
+      return;
+    }
+
+    if (pathname === "/v1/admin/users/reset-password" && req.method === "POST") {
+      const body = await parseBody(req);
+      if (!isSuperAdmin(req, body)) { sendJson(res, 403, { error: "invalid_admin_code" }); return; }
+      const userId = String(body.user_id || "").trim();
+      const password = String(body.password || "");
+      if (!userId || password.length < 6) { sendJson(res, 400, { error: "user_id and password (min 6 chars) required" }); return; }
+      const upd = await adminUpdateUser(userId, { password });
+      if (upd.error) { sendJson(res, 400, { error: "reset_failed", message: upd.message }); return; }
+      sendJson(res, 200, { status: "password_reset", user_id: userId });
+      return;
+    }
+
     // Public e-bill: view a receipt by order number (no auth, no store headers).
     if (pathname === "/v1/receipt" && req.method === "GET") {
       const url = new URL(req.url, "http://localhost");
@@ -510,7 +831,7 @@ module.exports = async function handler(req, res) {
       }
       const order = (await sbSelect(
         "orders",
-        `select=id,order_no,customer_id,customer_name,status,subtotal,tax_amount,discount_amount,total_amount,wallet_balance_after,created_at,business_id,store_id&order_no=eq.${encode(id)}&limit=1`
+        `select=id,order_no,channel,customer_id,customer_name,status,subtotal,tax_amount,discount_amount,total_amount,shipping_amount,tracking_number,courier,wallet_balance_after,created_at,business_id,store_id&order_no=eq.${encode(id)}&limit=1`
       ))[0];
       if (!order) {
         sendJson(res, 404, { error: "receipt_not_found" });
@@ -536,6 +857,7 @@ module.exports = async function handler(req, res) {
       const rewardEarned = rewardTxns.reduce((sum, txn) => sum + Number(txn.amount || 0), 0);
       sendJson(res, 200, {
         sale_id: order.order_no,
+        channel: order.channel,
         customer_name: order.customer_name,
         status: order.status,
         created_at: order.created_at,
@@ -543,8 +865,13 @@ module.exports = async function handler(req, res) {
           subtotal: Number(order.subtotal || 0),
           tax: Number(order.tax_amount || 0),
           discount: Number(order.discount_amount || 0),
+          shipping: Number(order.shipping_amount || 0),
           total: Number(order.total_amount || 0),
           wallet_balance: member ? Number(member.wallet_balance || 0) : Number(order.wallet_balance_after || 0)
+        },
+        tracking: {
+          tracking_number: order.tracking_number || "",
+          courier: order.courier || ""
         },
         membership: {
           referral_code: member ? member.referral_code : null,
@@ -618,6 +945,38 @@ module.exports = async function handler(req, res) {
 
     // Everything below needs a resolved business/store context.
     const ctx = await resolveContext(req);
+
+    // Current tenant/user context for the app header (business name, role, store).
+    if (pathname === "/v1/me" && req.method === "GET") {
+      const actor = await resolveActor(req);
+      const biz = (await sbSelect("businesses", `select=code,legal_name,gstin&id=eq.${encode(ctx.businessId)}&limit=1`).catch(() => []))[0] || {};
+      const store = (await sbSelect("stores", `select=code,name&id=eq.${encode(ctx.storeId)}&limit=1`).catch(() => []))[0] || {};
+      let role = "";
+      if (actor && actor.id) {
+        const u = (await sbSelect("app_users", `select=role&id=eq.${encode(actor.id)}&limit=1`).catch(() => []))[0];
+        role = u ? u.role : "";
+      }
+      sendJson(res, 200, {
+        email: actor ? actor.email : "",
+        role,
+        business: { id: ctx.businessId, code: biz.code || ctx.businessCode, name: biz.legal_name || "" },
+        store: { id: ctx.storeId, code: store.code || ctx.storeCode, name: store.name || "" }
+      });
+      return;
+    }
+
+    // Active stores for the current tenant (drives the top-bar store switcher).
+    if (pathname === "/v1/stores" && req.method === "GET") {
+      const rows = await sbSelect(
+        "stores",
+        `select=code,name,is_active&business_id=eq.${encode(ctx.businessId)}&order=created_at.asc`
+      ).catch(() => []);
+      sendJson(res, 200, {
+        items: rows.filter((s) => s.is_active !== false).map((s) => ({ code: s.code, name: s.name })),
+        current_store_code: (await sbSelect("stores", `select=code&id=eq.${encode(ctx.storeId)}&limit=1`).catch(() => []))[0]?.code || ""
+      });
+      return;
+    }
 
     // ------------------------- Dashboard -------------------------
     if (pathname === "/v1/reports/dashboard" && req.method === "GET") {
@@ -1810,7 +2169,7 @@ module.exports = async function handler(req, res) {
       }
       const order = (await sbSelect(
         "orders",
-        `select=id,customer_id,order_no,customer_name,status,total_amount,created_at,delivery_address,delivery_city,delivery_pincode&business_id=eq.${ctx.businessId}&channel=eq.online&order_no=eq.${encode(orderNo)}&limit=1`
+        `select=id,customer_id,order_no,customer_name,status,total_amount,shipping_amount,tracking_number,courier,created_at,delivery_address,delivery_city,delivery_pincode&business_id=eq.${ctx.businessId}&channel=eq.online&order_no=eq.${encode(orderNo)}&limit=1`
       ))[0];
       if (!order) {
         sendJson(res, 404, { error: "online_order_not_found" });
@@ -1824,6 +2183,9 @@ module.exports = async function handler(req, res) {
       sendJson(res, 200, {
         ...order,
         total_amount: Number(order.total_amount || 0),
+        shipping_amount: Number(order.shipping_amount || 0),
+        tracking_number: order.tracking_number || "",
+        courier: order.courier || "",
         status: titleCaseStatus(order.status),
         customer_phone: customer ? customer.phone || "" : "",
         items: items.map((item) => ({ ...item, quantity: Number(item.quantity || 0), unit_price: Number(item.unit_price || 0), line_total: Number(item.line_total || 0) })),
@@ -1858,6 +2220,8 @@ module.exports = async function handler(req, res) {
         delivery_address: String(body.delivery_address || "").trim() || null,
         delivery_city: String(body.delivery_city || "").trim() || null,
         delivery_pincode: String(body.delivery_pincode || "").trim() || null,
+        tracking_number: body.tracking_number !== undefined ? (String(body.tracking_number || "").trim() || null) : undefined,
+        courier: body.courier !== undefined ? (String(body.courier || "").trim() || null) : undefined,
         status: requestedStatus
       });
       if (requestedStatus === "paid" && order.status !== "paid") {
@@ -2096,7 +2460,9 @@ module.exports = async function handler(req, res) {
       const membershipDiscount = requestedRedemption
         ? roundMoney(Math.min(availableWallet * Number(membershipSettings.regular_wallet_redemption_percent) / 100, preMembershipTotal))
         : 0;
-      const finalTotal = roundMoney(preMembershipTotal - membershipDiscount);
+      const shippingAmount = roundMoney(Number((totals && totals.shipping_amount) || body.shipping_amount || 0));
+      const merchandiseTotal = roundMoney(preMembershipTotal - membershipDiscount);
+      const finalTotal = roundMoney(merchandiseTotal + shippingAmount);
       const totalDiscount = roundMoney(manualDiscount + promoDiscount + membershipDiscount);
 
       const insertedOrder = await sbInsert("orders", [
@@ -2121,6 +2487,7 @@ module.exports = async function handler(req, res) {
           promo_code: appliedPromoCode,
           promo_discount_amount: promoDiscount,
           total_amount: finalTotal,
+          shipping_amount: shippingAmount,
           wallet_balance_after: 0,
           sold_by_user_id: actor ? actor.id : null,
           sold_by_name: actor ? (actor.name || actor.email) : null
@@ -2142,7 +2509,7 @@ module.exports = async function handler(req, res) {
         const rewardRate = isFirstEligiblePurchase
           ? Number(membershipSettings.regular_first_purchase_reward_percent)
           : Number(membershipSettings.regular_repeat_purchase_reward_percent);
-        walletReward = roundMoney(finalTotal * rewardRate / 100);
+        walletReward = roundMoney(merchandiseTotal * rewardRate / 100);
         updatedMember = await applyWalletTransaction({ businessId: ctx.businessId, member: updatedMember, orderId, type: "purchase_reward", amount: walletReward, settings: membershipSettings });
         updatedMember = (await sbUpdate("membership_members", `id=eq.${member.id}`, {
           eligible_purchase_count: Number(member.eligible_purchase_count || 0) + 1
@@ -2152,7 +2519,7 @@ module.exports = async function handler(req, res) {
           const referral = (await sbSelect("membership_referrals", `select=*&referred_member_id=eq.${member.id}&status=eq.pending&limit=1`))[0];
           const referrer = referral && (await sbSelect("membership_members", `select=*&id=eq.${referral.referrer_member_id}&limit=1`))[0];
           if (referrer) {
-            referralReward = roundMoney(finalTotal * Number(membershipSettings.referral_reward_percent) / 100);
+            referralReward = roundMoney(merchandiseTotal * Number(membershipSettings.referral_reward_percent) / 100);
             await applyWalletTransaction({ businessId: ctx.businessId, member: referrer, orderId, type: "referral_reward", amount: referralReward, settings: membershipSettings });
             await sbUpdate("membership_referrals", `id=eq.${referral.id}`, { status: "successful", successful_order_id: orderId, completed_at: new Date().toISOString() });
           }
@@ -2254,6 +2621,10 @@ module.exports = async function handler(req, res) {
     }
     if (message.startsWith("business_not_found") || message.startsWith("store_not_found")) {
       sendJson(res, 400, { error: "context_not_found", message });
+      return;
+    }
+    if (message === "business_inactive") {
+      sendJson(res, 403, { error: "business_inactive", message: "Account is Deactivated, please contact admin" });
       return;
     }
     sendJson(res, 500, { error: "server_error", message });

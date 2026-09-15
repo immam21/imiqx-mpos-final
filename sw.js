@@ -1,5 +1,5 @@
-const CACHE = 'onecounter-v16';
-const ASSETS = ['./', './index.html', './login.html', './receipt.html', './wallet.html', './manifest.json', './icon.svg', './config.js', './pwa.js', './vendor/JsBarcode.all.min.js', './vendor/qrcode.min.js', './vendor/jspdf.umd.min.js', './vendor/html5-qrcode.min.js'];
+const CACHE = 'onecounter-v24';
+const ASSETS = ['./', './index.html', './login.html', './receipt.html', './wallet.html', './admindesk.html', './manifest.json', './icon.svg', './config.js', './pwa.js', './vendor/JsBarcode.all.min.js', './vendor/qrcode.min.js', './vendor/jspdf.umd.min.js', './vendor/html5-qrcode.min.js'];
 const OUTBOX_DB = 'onecounter-outbox';
 const OUTBOX_STORE = 'requests';
 const POS_SALES_PATH = '/v1/pos/sales';
@@ -114,6 +114,9 @@ self.addEventListener('fetch', (event) => {
     }
     if (url.pathname.endsWith('/wallet.html')) {
       return caches.match('./wallet.html');
+    }
+    if (url.pathname.endsWith('/admindesk') || url.pathname.endsWith('/admindesk.html')) {
+      return caches.match('./admindesk.html');
     }
     return caches.match('./index.html');
   };
