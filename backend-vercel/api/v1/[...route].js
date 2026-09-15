@@ -1689,7 +1689,7 @@ module.exports = async function handler(req, res) {
       ))[0] || {};
       const store = (await sbSelect(
         "stores",
-        `select=name,address_line,city,state,pincode&id=eq.${ctx.storeId}&limit=1`
+        `select=name,address_line,city,state,pincode,phone&id=eq.${ctx.storeId}&limit=1`
       ))[0] || {};
       sendJson(res, 200, {
         business: {
@@ -1703,7 +1703,8 @@ module.exports = async function handler(req, res) {
           address_line: store.address_line || "",
           city: store.city || "",
           state: store.state || "",
-          pincode: store.pincode || ""
+          pincode: store.pincode || "",
+          phone: store.phone || ""
         }
       });
       return;
@@ -2080,7 +2081,7 @@ module.exports = async function handler(req, res) {
       const b = rows[0] || {};
       const store = (await sbSelect(
         "stores",
-        `select=name,address_line,city,state,pincode&id=eq.${ctx.storeId}&limit=1`
+        `select=name,address_line,city,state,pincode,phone&id=eq.${ctx.storeId}&limit=1`
       ))[0] || {};
       sendJson(res, 200, {
         business_name: b.legal_name || "",
@@ -2091,7 +2092,8 @@ module.exports = async function handler(req, res) {
         store_address: store.address_line || "",
         store_city: store.city || "",
         store_state: store.state || "",
-        store_pincode: store.pincode || ""
+        store_pincode: store.pincode || "",
+        store_phone: store.phone || ""
       });
       return;
     }
@@ -2114,6 +2116,7 @@ module.exports = async function handler(req, res) {
       if (body.store_city !== undefined) storePatch.city = String(body.store_city || "").trim();
       if (body.store_state !== undefined) storePatch.state = String(body.store_state || "").trim();
       if (body.store_pincode !== undefined) storePatch.pincode = String(body.store_pincode || "").trim();
+      if (body.store_phone !== undefined) storePatch.phone = String(body.store_phone || "").trim();
       if (Object.keys(storePatch).length) {
         await sbUpdate("stores", `id=eq.${ctx.storeId}`, storePatch);
       }
