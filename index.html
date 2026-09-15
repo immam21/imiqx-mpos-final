@@ -1970,7 +1970,8 @@
         <div class="alert-row"><span>Order total</span><strong class="mono">${money(order.total_amount)}</strong></div>
         <div class="modal-actions">
           <button class="btn" type="button" data-action="send-online-receipt" data-order="${escapeAttr(order.order_no)}">Send Receipt (WhatsApp)</button>
-          <button class="btn" type="button" data-action="print-shipping-label" data-order="${escapeAttr(order.order_no)}">Print Shipping Label</button>
+          <button class="btn" type="button" data-action="print-shipping-label" data-format="single" data-order="${escapeAttr(order.order_no)}">Label 4×6</button>
+          <button class="btn" type="button" data-action="print-shipping-label" data-format="a4" data-order="${escapeAttr(order.order_no)}">Label A4 (4×)</button>
           ${edit ? `<button class="btn primary" type="button" data-action="save-online-order" data-order="${escapeAttr(order.order_no)}">Save Changes</button>` : `<button class="btn primary" type="button" data-action="edit-online-order" data-order="${escapeAttr(order.order_no)}">Edit Order</button>`}
         </div>`;
       document.getElementById("online-order-modal").classList.add("show");
@@ -2035,16 +2036,91 @@
     }
   }
 
-  async function printShippingLabel(orderNo) {
+  // Build the inner HTML for one 4in x 6in shipping label (SHIP TO, order, invoice, FROM).
+  function shippingLabelHtml(order, rc) {
+    const biz = (rc && rc.business) || {};
+    const store = (rc && rc.store) || {};
+    const fromName = biz.name || store.name || "OneCounter";
+    const fromLines = [
+      store.name && store.name !== fromName ? store.name : "",
+      store.address_line || "",
+      [store.city, store.state, store.pincode].filter(Boolean).join(", "),
+      store.phone ? ("Ph: " + store.phone) : ""
+    ].filter(Boolean).map((l) => `<div>${escapeAttr(l)}</div>`).join("");
+    const items = order.items || [];
+    const itemsSum = items.reduce((a, it) => a + Number(it.line_total || 0), 0);
+    const shipping = Number(order.shipping_amount || 0);
+    const rows = items.map((it) => `<tr><td>${escapeAttr(it.name)}</td><td class="c">${it.quantity}</td><td class="r">${money(it.line_total)}</td></tr>`).join("")
+      || `<tr><td colspan="3">No items</td></tr>`;
+    return `
+      <div class="lbl">
+        <div class="from">
+          <div class="cap">FROM</div>
+          <div class="fname">${escapeAttr(fromName)}</div>
+          ${fromLines}
+        </div>
+        <div class="ship">
+          <div class="cap">SHIP TO</div>
+          <div class="sname">${escapeAttr(order.customer_name || "-")}</div>
+          <div>${escapeAttr(order.delivery_address || "")}</div>
+          <div>${escapeAttr([order.delivery_city, order.delivery_pincode].filter(Boolean).join(" - "))}</div>
+          <div>Ph: ${escapeAttr(order.customer_phone || "")}</div>
+          ${order.courier ? `<div>Courier: ${escapeAttr(order.courier)}</div>` : ""}
+          ${order.tracking_number ? `<div>AWB: ${escapeAttr(order.tracking_number)}</div>` : ""}
+        </div>
+        <div class="ord">${escapeAttr(order.order_no)}</div>
+        <table class="items"><thead><tr><th>Item</th><th class="c">Qty</th><th class="r">Amt</th></tr></thead><tbody>${rows}</tbody></table>
+        <div class="tot">
+          <div><span>Subtotal</span><span class="mono">${money(itemsSum)}</span></div>
+          ${shipping > 0 ? `<div><span>Shipping</span><span class="mono">${money(shipping)}</span></div>` : ""}
+          <div class="grand"><span>Total</span><span class="mono">${money(order.total_amount)}</span></div>
+        </div>
+      </div>`;
+  }
+
+  // format: "single" (one 4x6 label) or "a4" (A4 sheet with a 2x2 grid of four 4x6 labels).
+  async function printShippingLabel(orderNo, format = "single") {
     try {
       const order = await apiFetch(`/v1/online-orders/detail?order_no=${encodeURIComponent(orderNo)}`);
-      const label = window.open("", "_blank");
-      if (!label) {
+      if (!appState.receiptContext) {
+        try {
+          appState.receiptContext = await apiFetch(API_ENDPOINTS.receiptContext);
+        } catch (_) {
+          appState.receiptContext = { business: {}, store: {} };
+        }
+      }
+      const win = window.open("", "_blank");
+      if (!win) {
         showToast("Allow popups to print the shipping label");
         return;
       }
-      label.document.write(`<!doctype html><title>Shipping Label</title><style>body{font:16px sans-serif;padding:24px}.label{border:2px solid #111;padding:24px;max-width:420px}.order{font-family:monospace;font-size:18px;font-weight:bold;margin-bottom:20px}h1{font-size:15px;margin:0 0 8px;color:#555}p{margin:4px 0}</style><main class="label"><h1>SHIP TO</h1><p><strong>${escapeAttr(order.customer_name)}</strong></p><p>${escapeAttr(order.delivery_address)}</p><p>${escapeAttr(order.delivery_city)} ${escapeAttr(order.delivery_pincode)}</p><p>${escapeAttr(order.customer_phone)}</p><div class="order">${escapeAttr(order.order_no)}</div></main><script>print();<\/script>`);
-      label.document.close();
+      const one = shippingLabelHtml(order, appState.receiptContext);
+      const isA4 = format === "a4";
+      const pageCss = isA4
+        ? "@page { size: A4; margin: 6mm; } .sheet { display:grid; grid-template-columns:1fr 1fr; grid-auto-rows:138mm; gap:4mm; } .lbl { width:100%; height:138mm; }"
+        : "@page { size: 4in 6in; margin: 0; } .sheet { display:block; } .lbl { width:4in; height:6in; }";
+      const body = isA4 ? `<div class="sheet">${one.repeat(4)}</div>` : `<div class="sheet">${one}</div>`;
+      win.document.write(`<!doctype html><html><head><meta charset="utf-8" /><title>Shipping Label ${escapeAttr(order.order_no)}</title><style>
+        * { box-sizing: border-box; }
+        html, body { margin:0; padding:0; }
+        body { font:11px/1.3 Arial, Helvetica, sans-serif; color:#000; }
+        ${pageCss}
+        .lbl { border:1.5px solid #000; padding:8px; overflow:hidden; page-break-inside:avoid; display:flex; flex-direction:column; }
+        .cap { font-size:9px; font-weight:700; letter-spacing:.06em; color:#000; border-bottom:1px solid #000; padding-bottom:2px; margin-bottom:3px; }
+        .from { font-size:10px; }
+        .from .fname { font-weight:700; font-size:12px; }
+        .ship { margin-top:6px; }
+        .ship .sname { font-weight:700; font-size:15px; }
+        .ord { font-family:ui-monospace, Menlo, monospace; font-weight:700; font-size:16px; text-align:center; border:1.5px solid #000; padding:4px; margin:6px 0; letter-spacing:.04em; }
+        table.items { width:100%; border-collapse:collapse; font-size:10px; margin-top:2px; }
+        table.items th, table.items td { border-bottom:1px solid #999; padding:2px 3px; text-align:left; }
+        table.items .c { text-align:center; } table.items .r { text-align:right; }
+        .tot { margin-top:auto; font-size:11px; padding-top:4px; }
+        .tot > div { display:flex; justify-content:space-between; padding:1px 0; }
+        .tot .grand { font-weight:700; font-size:13px; border-top:1.5px solid #000; margin-top:3px; padding-top:3px; }
+        .mono { font-family:ui-monospace, Menlo, monospace; }
+      </style></head><body>${body}<script>window.onload=function(){window.focus();window.print();}<\/script></body></html>`);
+      win.document.close();
     } catch (_) {
       showToast("Unable to print shipping label");
     }
@@ -2609,6 +2685,7 @@
       prices_include_gst: Boolean(document.getElementById("set-prices-include-gst")?.checked),
       store_name: fieldVal("set-store-name"),
       store_address: fieldVal("set-store-address"),
+      store_phone: fieldVal("set-store-phone"),
       store_city: fieldVal("set-store-city"),
       store_state: fieldVal("set-store-state"),
       store_pincode: fieldVal("set-store-pincode")
@@ -4934,7 +5011,7 @@
         <article class="section card reveal">
           <h3 class="panel-title">Manual Orders</h3>
           <div class="table-wrap"><table><thead><tr><th>Order</th><th>Customer</th><th>Destination</th><th>Amount</th><th>Payment / Status</th><th>Date & Time</th><th>Actions</th></tr></thead><tbody>
-            ${onlineOrders.map((order) => `<tr><td class="mono">${order.order_no}</td><td>${order.customer_name || "-"}</td><td>${[order.delivery_city, order.delivery_pincode].filter(Boolean).join(" ") || "-"}</td><td class="mono">${money(order.total_amount)}</td><td><span class="chip ${String(order.status).toLowerCase() === "paid" ? "good" : "warn"}">${order.status}</span></td><td class="mono">${formatDateTime(order.created_at)}</td><td style="display:flex; gap:6px; flex-wrap:wrap;"><button class="btn" type="button" data-action="view-online-order" data-order="${escapeAttr(order.order_no)}">View</button><button class="btn" type="button" data-action="edit-online-order" data-order="${escapeAttr(order.order_no)}">Edit</button><button class="btn" type="button" data-action="print-shipping-label" data-order="${escapeAttr(order.order_no)}">Shipping Label</button></td></tr>`).join("") || `<tr><td colspan="7">No online orders yet.</td></tr>`}
+            ${onlineOrders.map((order) => `<tr><td class="mono">${order.order_no}</td><td>${order.customer_name || "-"}</td><td>${[order.delivery_city, order.delivery_pincode].filter(Boolean).join(" ") || "-"}</td><td class="mono">${money(order.total_amount)}</td><td><span class="chip ${String(order.status).toLowerCase() === "paid" ? "good" : "warn"}">${order.status}</span></td><td class="mono">${formatDateTime(order.created_at)}</td><td style="display:flex; gap:6px; flex-wrap:wrap;"><button class="btn" type="button" data-action="view-online-order" data-order="${escapeAttr(order.order_no)}">View</button><button class="btn" type="button" data-action="edit-online-order" data-order="${escapeAttr(order.order_no)}">Edit</button><button class="btn" type="button" data-action="print-shipping-label" data-format="single" data-order="${escapeAttr(order.order_no)}">Label 4×6</button><button class="btn" type="button" data-action="print-shipping-label" data-format="a4" data-order="${escapeAttr(order.order_no)}">Label A4</button></td></tr>`).join("") || `<tr><td colspan="7">No online orders yet.</td></tr>`}
           </tbody></table></div>
         </article>
       `;
@@ -4967,6 +5044,7 @@
             <div style="display:grid; gap:8px;">
               <label class="field"><span aria-hidden="true">Store Name</span><input id="set-store-name" type="text" placeholder="Store name" value="${(s.store_name || "").replace(/"/g, "&quot;")}" /></label>
               <label class="field"><span aria-hidden="true">Address</span><input id="set-store-address" type="text" placeholder="Address line" value="${(s.store_address || "").replace(/"/g, "&quot;")}" /></label>
+              <label class="field"><span aria-hidden="true">Phone</span><input id="set-store-phone" type="tel" inputmode="tel" placeholder="Store contact number" value="${(s.store_phone || "").replace(/"/g, "&quot;")}" /></label>
               <div class="grid three-col">
                 <label class="field"><span aria-hidden="true">City</span><input id="set-store-city" type="text" placeholder="City" value="${(s.store_city || "").replace(/"/g, "&quot;")}" /></label>
                 <label class="field"><span aria-hidden="true">State</span><input id="set-store-state" type="text" placeholder="State" value="${(s.store_state || "").replace(/"/g, "&quot;")}" /></label>
@@ -5654,7 +5732,7 @@
         return;
       }
       if (action === "print-shipping-label") {
-        printShippingLabel(actionBtn.dataset.order);
+        printShippingLabel(actionBtn.dataset.order, actionBtn.dataset.format || "single");
         return;
       }
       if (action === "send-online-receipt") {
