@@ -1,0 +1,472 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>OneCounter — Admin Desk</title>
+<meta name="theme-color" content="#0F766E" />
+<link rel="manifest" href="manifest.json" />
+<link rel="icon" href="icon.svg" type="image/svg+xml" />
+<style>
+  :root { --brand:#0f766e; --line:#e2e8f0; --muted:#64748b; --txt:#0f172a; --bg:#f1f5f9; --danger:#b91c1c; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family:-apple-system, Inter, system-ui, sans-serif; color:var(--txt); background:var(--bg); }
+  header { background:var(--brand); color:#fff; padding:14px 20px; display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px; }
+  header h1 { margin:0; font-size:18px; }
+  header .who { font-size:12px; opacity:.9; }
+  main { max-width:1000px; margin:0 auto; padding:18px 16px 60px; }
+  .card { background:#fff; border:1px solid var(--line); border-radius:12px; padding:16px; margin-bottom:16px; box-shadow:0 6px 18px rgba(15,23,42,.05); }
+  h2 { font-size:15px; margin:0 0 12px; }
+  h3 { font-size:12px; text-transform:uppercase; letter-spacing:.5px; color:var(--muted); margin:16px 0 8px; }
+  label { display:block; font-size:12px; color:var(--muted); margin-bottom:4px; }
+  input, select { width:100%; padding:10px; font-size:14px; border:1px solid var(--line); border-radius:8px; outline:none; background:#fff; }
+  input:focus, select:focus { border-color:var(--brand); }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:10px; align-items:end; }
+  .field { margin-bottom:6px; }
+  button { padding:10px 16px; font-size:14px; font-weight:600; color:#fff; background:var(--brand); border:none; border-radius:8px; cursor:pointer; }
+  button.secondary { background:#334155; }
+  button.danger { background:var(--danger); }
+  button:disabled { opacity:.6; cursor:default; }
+  table { width:100%; border-collapse:collapse; font-size:13px; margin-top:8px; }
+  th, td { text-align:left; padding:8px 6px; border-bottom:1px solid var(--line); }
+  th { font-size:11px; text-transform:uppercase; letter-spacing:.4px; color:var(--muted); }
+  tr.selectable { cursor:pointer; }
+  tr.selected { background:#ecfdf5; }
+  .mono { font-family:ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .chip { display:inline-block; padding:2px 8px; border-radius:999px; font-size:11px; font-weight:600; background:#e2e8f0; color:#334155; }
+  .muted { color:var(--muted); font-size:12px; }
+  .hidden { display:none !important; }
+  .msg { font-size:13px; margin-top:8px; min-height:16px; }
+  .msg.err { color:var(--danger); }
+  .msg.ok { color:var(--brand); }
+  .gate { max-width:360px; margin:60px auto; }
+  .toast { position:fixed; left:50%; bottom:24px; transform:translateX(-50%) translateY(20px); background:#0f172a; color:#fff; padding:10px 16px; border-radius:999px; font-size:13px; opacity:0; pointer-events:none; transition:all .25s; z-index:50; }
+  .toast.show { opacity:1; transform:translateX(-50%) translateY(0); }
+  .row-actions { display:flex; gap:6px; }
+  .pill { font-size:11px; padding:2px 8px; border-radius:999px; }
+  .pill.on { background:#dcfce7; color:#166534; }
+  .pill.off { background:#fee2e2; color:#991b1b; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Admin Desk</h1>
+  <div style="display:flex; align-items:center; gap:12px;">
+    <span class="who" id="who"></span>
+    <button id="logout" type="button" class="hidden" style="background:rgba(255,255,255,.18); padding:7px 14px; font-size:13px;">Logout</button>
+  </div>
+</header>
+<main>
+  <!-- Gate -->
+  <div class="card gate" id="gate">
+    <h2>Enter admin code</h2>
+    <p class="muted">Platform super-admin access to onboard tenants, stores, and users.</p>
+    <div class="field" style="margin-top:10px;">
+      <label for="admin-code">Admin code</label>
+      <input id="admin-code" type="password" placeholder="Admin code" autocomplete="off" />
+    </div>
+    <div style="margin-top:10px;"><button id="unlock" type="button">Unlock</button></div>
+    <div class="msg" id="gate-msg"></div>
+  </div>
+
+  <!-- Console -->
+  <div id="console" class="hidden">
+    <!-- Businesses -->
+    <div class="card">
+      <h2>Tenants (Businesses)</h2>
+      <div class="grid">
+        <div class="field"><label>Legal name *</label><input id="b-name" type="text" placeholder="Acme Retail Pvt Ltd" /></div>
+        <div class="field"><label>Code (optional)</label><input id="b-code" type="text" placeholder="auto from name" /></div>
+        <div class="field"><label>GSTIN</label><input id="b-gstin" type="text" placeholder="22AAAAA0000A1Z5" /></div>
+        <div class="field"><label>PAN</label><input id="b-pan" type="text" placeholder="AAAAA0000A" /></div>
+        <div class="field"><label>Invoice prefix</label><input id="b-prefix" type="text" placeholder="ACME/" /></div>
+        <div class="field"><label>Timezone</label><input id="b-tz" type="text" value="Asia/Kolkata" /></div>
+        <div class="field"><button id="b-create" type="button">Add Business</button> <button id="b-cancel" type="button" class="secondary hidden">Cancel</button></div>
+      </div>
+      <div class="msg" id="b-msg"></div>
+      <table>
+        <thead><tr><th>Code</th><th>Business</th><th>GSTIN</th><th>Stores</th><th>Status</th><th>Actions</th></tr></thead>
+        <tbody id="b-list"><tr><td colspan="6" class="muted">Loading…</td></tr></tbody>
+      </table>
+    </div>
+
+    <!-- Stores -->
+    <div class="card">
+      <h2>Stores <span class="muted" id="s-context"></span></h2>
+      <div id="s-nobiz" class="muted">Select a business above to manage its stores.</div>
+      <div id="s-panel" class="hidden">
+        <div class="grid">
+          <div class="field"><label>Store name *</label><input id="s-name" type="text" placeholder="Main Store" /></div>
+          <div class="field"><label>Code (optional)</label><input id="s-code" type="text" placeholder="auto from name" /></div>
+          <div class="field"><label>Type</label><select id="s-type"><option value="retail">retail</option><option value="online">online</option><option value="warehouse">warehouse</option></select></div>
+          <div class="field"><label>City</label><input id="s-city" type="text" placeholder="Chennai" /></div>
+          <div class="field"><label>State</label><input id="s-state" type="text" placeholder="Tamil Nadu" /></div>
+          <div class="field"><button id="s-create" type="button">Add Store</button> <button id="s-cancel" type="button" class="secondary hidden">Cancel</button></div>
+        </div>
+        <div class="msg" id="s-msg"></div>
+        <table>
+          <thead><tr><th>Code</th><th>Name</th><th>Type</th><th>City</th><th>Status</th><th>Actions</th></tr></thead>
+          <tbody id="s-list"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Users -->
+    <div class="card">
+      <h2>Users &amp; Roles</h2>
+      <div class="grid">
+        <div class="field"><label>Email *</label><input id="u-email" type="email" placeholder="user@tenant.com" autocomplete="off" /></div>
+        <div class="field"><label>Password *</label><input id="u-pass" type="text" placeholder="Temp password" autocomplete="off" /></div>
+        <div class="field"><label>Role</label><select id="u-role"><option value="cashier">cashier</option><option value="manager" selected>manager</option><option value="admin">admin</option></select></div>
+        <div class="field"><label>Business</label><select id="u-biz"></select></div>
+        <div class="field"><label>Default store</label><select id="u-store"></select></div>
+        <div class="field"><button id="u-create" type="button">Add User</button></div>
+      </div>
+      <div class="msg" id="u-msg"></div>
+      <table>
+        <thead><tr><th>Email</th><th>Role</th><th>Business</th><th></th></tr></thead>
+        <tbody id="u-list"><tr><td colspan="4" class="muted">Loading…</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+</main>
+<div class="toast" id="toast"></div>
+
+<script src="config.js"></script>
+<script>if(["localhost","127.0.0.1"].indexOf(location.hostname)!==-1){document.write('<scr'+'ipt src="config.local.js"><\/scr'+'ipt>');}</script>
+<script>
+  const API_BASE = window.__ONECOUNTER_API_BASE_URL__ || "http://localhost:8787";
+  let CODE = sessionStorage.getItem("admindesk_code") || "";
+  let BUSINESSES = [];
+  let STORES = [];
+  let SELECTED_BIZ = null; // { id, code, legal_name }
+  let editingBizId = null;
+  let editingStoreId = null;
+
+  const $ = (id) => document.getElementById(id);
+  function toast(msg) { const t = $("toast"); t.textContent = msg; t.classList.add("show"); clearTimeout(window.__tt); window.__tt = setTimeout(() => t.classList.remove("show"), 2400); }
+  function esc(s) { return String(s == null ? "" : s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
+
+  async function api(path, { method = "GET", body = null } = {}) {
+    const url = new URL(API_BASE + path);
+    if (method === "GET") url.searchParams.set("admin_code", CODE);
+    const opts = { method, headers: {} };
+    if (body) { opts.headers["Content-Type"] = "application/json"; opts.body = JSON.stringify({ ...body, admin_code: CODE }); }
+    const res = await fetch(url.toString(), opts);
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.message || data.error || ("HTTP " + res.status));
+    return data;
+  }
+
+  // ---------- Gate ----------
+  async function unlock() {
+    const code = $("admin-code").value.trim() || CODE;
+    if (!code) return;
+    CODE = code;
+    $("gate-msg").textContent = "Checking…";
+    $("gate-msg").className = "msg";
+    try {
+      await api("/v1/admin/businesses");
+      sessionStorage.setItem("admindesk_code", CODE);
+      showConsole();
+    } catch (e) {
+      CODE = "";
+      $("gate-msg").textContent = "Invalid admin code.";
+      $("gate-msg").className = "msg err";
+    }
+  }
+
+  function showConsole() {
+    $("gate").classList.add("hidden");
+    $("console").classList.remove("hidden");
+    $("who").textContent = "Super-admin session";
+    $("logout").classList.remove("hidden");
+    loadBusinesses();
+    loadUsers();
+  }
+
+  function logout() {
+    sessionStorage.removeItem("admindesk_code");
+    CODE = "";
+    window.location.reload();
+  }
+
+  // ---------- Businesses ----------
+  async function loadBusinesses() {
+    try {
+      const data = await api("/v1/admin/businesses");
+      BUSINESSES = data.items || [];
+    } catch (e) { BUSINESSES = []; }
+    const tb = $("b-list");
+    tb.innerHTML = BUSINESSES.length ? BUSINESSES.map((b) => `
+      <tr class="selectable ${SELECTED_BIZ && SELECTED_BIZ.id === b.id ? "selected" : ""}" data-id="${esc(b.id)}">
+        <td class="mono">${esc(b.code)}</td>
+        <td>${esc(b.legal_name)}</td>
+        <td class="mono">${esc(b.gstin || "-")}</td>
+        <td>${b.store_count || 0}</td>
+        <td><span class="pill ${b.is_active ? "on" : "off"}">${b.is_active ? "active" : "inactive"}</span></td>
+        <td class="row-actions">
+          <button class="secondary" type="button" data-b-edit="${esc(b.id)}">Edit</button>
+          <button class="secondary" type="button" data-b-toggle="${esc(b.id)}">${b.is_active ? "Deactivate" : "Activate"}</button>
+          <button class="danger" type="button" data-b-del="${esc(b.id)}">Delete</button>
+        </td>
+      </tr>`).join("") : `<tr><td colspan="6" class="muted">No businesses yet. Add one above.</td></tr>`;
+    tb.querySelectorAll("tr.selectable").forEach((tr) => tr.addEventListener("click", (e) => { if (e.target.closest("[data-b-edit],[data-b-del],[data-b-toggle]")) return; selectBusiness(tr.dataset.id); }));
+    tb.querySelectorAll("[data-b-edit]").forEach((btn) => btn.addEventListener("click", () => editBusiness(btn.dataset.bEdit)));
+    tb.querySelectorAll("[data-b-toggle]").forEach((btn) => btn.addEventListener("click", () => toggleBusiness(btn.dataset.bToggle)));
+    tb.querySelectorAll("[data-b-del]").forEach((btn) => btn.addEventListener("click", () => deleteBusiness(btn.dataset.bDel)));
+    // Refresh the user-form business dropdown.
+    const sel = $("u-biz");
+    const cur = sel.value;
+    sel.innerHTML = `<option value="">— none —</option>` + BUSINESSES.map((b) => `<option value="${esc(b.id)}">${esc(b.legal_name)}</option>`).join("");
+    if (cur) sel.value = cur;
+    populateUserStores();
+  }
+
+  async function createBusiness() {
+    const name = $("b-name").value.trim();
+    if (!name) { $("b-msg").textContent = "Legal name is required."; $("b-msg").className = "msg err"; return; }
+    $("b-create").disabled = true;
+    try {
+      if (editingBizId) {
+        await api("/v1/admin/businesses/update", { method: "POST", body: {
+          id: editingBizId, legal_name: name, gstin: $("b-gstin").value.trim(),
+          pan: $("b-pan").value.trim(), invoice_prefix: $("b-prefix").value.trim(), timezone: $("b-tz").value.trim()
+        }});
+        $("b-msg").textContent = "Business updated."; $("b-msg").className = "msg ok";
+        toast("Tenant updated");
+      } else {
+        await api("/v1/admin/businesses", { method: "POST", body: {
+          legal_name: name, code: $("b-code").value.trim(), gstin: $("b-gstin").value.trim(),
+          pan: $("b-pan").value.trim(), invoice_prefix: $("b-prefix").value.trim(), timezone: $("b-tz").value.trim()
+        }});
+        $("b-msg").textContent = "Business added."; $("b-msg").className = "msg ok";
+        toast("Tenant onboarded");
+      }
+      resetBusinessForm();
+      loadBusinesses();
+    } catch (e) { $("b-msg").textContent = e.message; $("b-msg").className = "msg err"; }
+    finally { $("b-create").disabled = false; }
+  }
+
+  function editBusiness(id) {
+    const b = BUSINESSES.find((x) => x.id === id);
+    if (!b) return;
+    editingBizId = id;
+    $("b-name").value = b.legal_name || "";
+    $("b-code").value = b.code || ""; $("b-code").disabled = true;
+    $("b-gstin").value = b.gstin || "";
+    $("b-pan").value = b.pan || "";
+    $("b-prefix").value = b.invoice_prefix || "";
+    $("b-tz").value = b.timezone || "Asia/Kolkata";
+    $("b-create").textContent = "Save Changes";
+    $("b-cancel").classList.remove("hidden");
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  function resetBusinessForm() {
+    editingBizId = null;
+    ["b-name", "b-code", "b-gstin", "b-pan", "b-prefix"].forEach((id) => $(id).value = "");
+    $("b-tz").value = "Asia/Kolkata";
+    $("b-code").disabled = false;
+    $("b-create").textContent = "Add Business";
+    $("b-cancel").classList.add("hidden");
+  }
+
+  async function toggleBusiness(id) {
+    const b = BUSINESSES.find((x) => x.id === id);
+    if (!b) return;
+    try { await api("/v1/admin/businesses/update", { method: "POST", body: { id, is_active: !b.is_active } }); toast(b.is_active ? "Deactivated" : "Activated"); loadBusinesses(); }
+    catch (e) { toast(e.message); }
+  }
+
+  async function deleteBusiness(id) {
+    const b = BUSINESSES.find((x) => x.id === id);
+    if (!b) return;
+    if (!confirm(`Delete "${b.legal_name}"?\n\nThis permanently removes the business AND all its stores, products, sales, and data. This cannot be undone.`)) return;
+    if (prompt(`Type the business code "${b.code}" to confirm deletion:`) !== b.code) { toast("Deletion cancelled"); return; }
+    try {
+      await api("/v1/admin/businesses/delete", { method: "POST", body: { id } });
+      if (SELECTED_BIZ && SELECTED_BIZ.id === id) { SELECTED_BIZ = null; $("s-panel").classList.add("hidden"); $("s-nobiz").classList.remove("hidden"); $("s-context").textContent = ""; }
+      toast("Business deleted");
+      loadBusinesses();
+    } catch (e) { toast("Delete failed: " + e.message); }
+  }
+
+  function selectBusiness(id) {
+    SELECTED_BIZ = BUSINESSES.find((b) => b.id === id) || null;
+    document.querySelectorAll("#b-list tr").forEach((tr) => tr.classList.toggle("selected", tr.dataset.id === id));
+    if (!SELECTED_BIZ) return;
+    $("s-context").textContent = "· " + SELECTED_BIZ.legal_name;
+    $("s-nobiz").classList.add("hidden");
+    $("s-panel").classList.remove("hidden");
+    loadStores();
+  }
+
+  // ---------- Stores ----------
+  async function loadStores() {
+    if (!SELECTED_BIZ) return;
+    let items = [];
+    try { items = (await api("/v1/admin/stores?business_id=" + encodeURIComponent(SELECTED_BIZ.id))).items || []; } catch (e) { items = []; }
+    STORES = items;
+    $("s-list").innerHTML = items.length ? items.map((s) => `
+      <tr><td class="mono">${esc(s.code)}</td><td>${esc(s.name)}</td><td>${esc(s.store_type)}</td><td>${esc(s.city || "-")}</td>
+      <td><span class="pill ${s.is_active ? "on" : "off"}">${s.is_active ? "active" : "inactive"}</span></td>
+      <td class="row-actions">
+        <button class="secondary" type="button" data-s-edit="${esc(s.id)}">Edit</button>
+        <button class="secondary" type="button" data-s-toggle="${esc(s.id)}">${s.is_active ? "Deactivate" : "Activate"}</button>
+        <button class="danger" type="button" data-s-del="${esc(s.id)}">Delete</button>
+      </td></tr>`).join("")
+      : `<tr><td colspan="6" class="muted">No stores yet for this business.</td></tr>`;
+    $("s-list").querySelectorAll("[data-s-edit]").forEach((btn) => btn.addEventListener("click", () => editStore(btn.dataset.sEdit)));
+    $("s-list").querySelectorAll("[data-s-toggle]").forEach((btn) => btn.addEventListener("click", () => toggleStore(btn.dataset.sToggle)));
+    $("s-list").querySelectorAll("[data-s-del]").forEach((btn) => btn.addEventListener("click", () => deleteStore(btn.dataset.sDel)));
+    populateUserStores();
+  }
+
+  async function createStore() {
+    if (!SELECTED_BIZ) return;
+    const name = $("s-name").value.trim();
+    if (!name) { $("s-msg").textContent = "Store name is required."; $("s-msg").className = "msg err"; return; }
+    $("s-create").disabled = true;
+    try {
+      if (editingStoreId) {
+        await api("/v1/admin/stores/update", { method: "POST", body: {
+          id: editingStoreId, name, store_type: $("s-type").value, city: $("s-city").value.trim(), state: $("s-state").value.trim()
+        }});
+        $("s-msg").textContent = "Store updated."; $("s-msg").className = "msg ok";
+        toast("Store updated");
+      } else {
+        await api("/v1/admin/stores", { method: "POST", body: {
+          business_id: SELECTED_BIZ.id, name, code: $("s-code").value.trim(),
+          store_type: $("s-type").value, city: $("s-city").value.trim(), state: $("s-state").value.trim()
+        }});
+        $("s-msg").textContent = "Store added."; $("s-msg").className = "msg ok";
+        toast("Store created");
+      }
+      resetStoreForm();
+      loadStores();
+      loadBusinesses();
+    } catch (e) { $("s-msg").textContent = e.message; $("s-msg").className = "msg err"; }
+    finally { $("s-create").disabled = false; }
+  }
+
+  function editStore(id) {
+    const s = STORES.find((x) => x.id === id);
+    if (!s) return;
+    editingStoreId = id;
+    $("s-name").value = s.name || "";
+    $("s-code").value = s.code || ""; $("s-code").disabled = true;
+    $("s-type").value = s.store_type || "retail";
+    $("s-city").value = s.city || "";
+    $("s-state").value = s.state || "";
+    $("s-create").textContent = "Save Changes";
+    $("s-cancel").classList.remove("hidden");
+  }
+
+  function resetStoreForm() {
+    editingStoreId = null;
+    ["s-name", "s-code", "s-city", "s-state"].forEach((id) => $(id).value = "");
+    $("s-code").disabled = false;
+    $("s-create").textContent = "Add Store";
+    $("s-cancel").classList.add("hidden");
+  }
+
+  async function toggleStore(id) {
+    const s = STORES.find((x) => x.id === id);
+    if (!s) return;
+    try { await api("/v1/admin/stores/update", { method: "POST", body: { id, is_active: !s.is_active } }); toast(s.is_active ? "Deactivated" : "Activated"); loadStores(); }
+    catch (e) { toast(e.message); }
+  }
+
+  async function deleteStore(id) {
+    const s = STORES.find((x) => x.id === id);
+    if (!s) return;
+    if (!confirm(`Delete store "${s.name}"?\n\nThis removes the store and its inventory/sales links. This cannot be undone.`)) return;
+    try { await api("/v1/admin/stores/delete", { method: "POST", body: { id } }); toast("Store deleted"); loadStores(); loadBusinesses(); }
+    catch (e) { toast("Delete failed: " + e.message); }
+  }
+
+  // ---------- Users ----------
+  async function populateUserStores() {
+    const bizId = $("u-biz").value;
+    const sel = $("u-store");
+    if (!bizId) { sel.innerHTML = `<option value="">— none —</option>`; return; }
+    let items = [];
+    try { items = (await api("/v1/admin/stores?business_id=" + encodeURIComponent(bizId))).items || []; } catch (e) { items = []; }
+    sel.innerHTML = `<option value="">— none —</option>` + items.map((s) => `<option value="${esc(s.id)}">${esc(s.name)}</option>`).join("");
+  }
+
+  async function loadUsers() {
+    let users = [];
+    try { users = (await api("/v1/admin/users")).users || []; } catch (e) { users = []; }
+    const roleOpts = (cur) => ["cashier", "manager", "admin"].map((r) => `<option value="${r}" ${r === cur ? "selected" : ""}>${r}</option>`).join("");
+    const bizOpts = (cur) => `<option value="">— none —</option>` + BUSINESSES.map((b) => `<option value="${esc(b.id)}" ${b.id === cur ? "selected" : ""}>${esc(b.legal_name)}</option>`).join("");
+    $("u-list").innerHTML = users.length ? users.map((u) => `
+      <tr data-uid="${esc(u.id)}">
+        <td>${esc(u.email)}</td>
+        <td><select class="u-role-sel" data-uid="${esc(u.id)}">${roleOpts(u.role)}</select></td>
+        <td><select class="u-biz-sel" data-uid="${esc(u.id)}">${bizOpts(u.business_id)}</select></td>
+        <td class="row-actions">
+          <button class="secondary" type="button" data-u-reset="${esc(u.id)}" data-email="${esc(u.email)}">Reset PW</button>
+          <button class="danger" type="button" data-del="${esc(u.id)}" data-email="${esc(u.email)}">Delete</button>
+        </td>
+      </tr>`).join("") : `<tr><td colspan="4" class="muted">No users yet.</td></tr>`;
+    $("u-list").querySelectorAll(".u-role-sel").forEach((sel) => sel.addEventListener("change", () => updateUser(sel.dataset.uid, { role: sel.value })));
+    $("u-list").querySelectorAll(".u-biz-sel").forEach((sel) => sel.addEventListener("change", () => updateUser(sel.dataset.uid, { business_id: sel.value })));
+    $("u-list").querySelectorAll("[data-u-reset]").forEach((btn) => btn.addEventListener("click", () => resetPassword(btn.dataset.uReset, btn.dataset.email)));
+    $("u-list").querySelectorAll("[data-del]").forEach((btn) => btn.addEventListener("click", () => deleteUser(btn.dataset.del, btn.dataset.email)));
+  }
+
+  async function updateUser(userId, patch) {
+    try { await api("/v1/admin/users/update", { method: "POST", body: { user_id: userId, ...patch } }); toast("User updated"); }
+    catch (e) { toast("Update failed: " + e.message); loadUsers(); }
+  }
+
+  async function resetPassword(userId, email) {
+    const pw = prompt(`New password for ${email} (min 6 characters):`);
+    if (pw == null) return;
+    if (pw.length < 6) { toast("Password must be at least 6 characters"); return; }
+    try { await api("/v1/admin/users/reset-password", { method: "POST", body: { user_id: userId, password: pw } }); toast("Password reset"); }
+    catch (e) { toast("Reset failed: " + e.message); }
+  }
+
+  async function createUser() {
+    const email = $("u-email").value.trim();
+    const pass = $("u-pass").value;
+    if (!email || !pass) { $("u-msg").textContent = "Email and password are required."; $("u-msg").className = "msg err"; return; }
+    $("u-create").disabled = true;
+    try {
+      await api("/v1/admin/users", { method: "POST", body: {
+        email, password: pass, role: $("u-role").value,
+        business_id: $("u-biz").value || undefined, default_store_id: $("u-store").value || undefined
+      }});
+      $("u-email").value = ""; $("u-pass").value = "";
+      $("u-msg").textContent = "User created."; $("u-msg").className = "msg ok";
+      toast("User added");
+      loadUsers();
+    } catch (e) { $("u-msg").textContent = e.message; $("u-msg").className = "msg err"; }
+    finally { $("u-create").disabled = false; }
+  }
+
+  async function deleteUser(id, email) {
+    if (!confirm("Delete user " + email + "?")) return;
+    try { await api("/v1/admin/users/delete", { method: "POST", body: { user_id: id } }); toast("User deleted"); loadUsers(); }
+    catch (e) { toast("Delete failed: " + e.message); }
+  }
+
+  // ---------- Wire up ----------
+  $("unlock").addEventListener("click", unlock);
+  $("logout").addEventListener("click", logout);
+  $("admin-code").addEventListener("keydown", (e) => { if (e.key === "Enter") unlock(); });
+  $("b-create").addEventListener("click", createBusiness);
+  $("b-cancel").addEventListener("click", resetBusinessForm);
+  $("s-create").addEventListener("click", createStore);
+  $("s-cancel").addEventListener("click", resetStoreForm);
+  $("u-create").addEventListener("click", createUser);
+  $("u-biz").addEventListener("change", populateUserStores);
+
+  if (CODE) { unlock(); }
+</script>
+</body>
+</html>

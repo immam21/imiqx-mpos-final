@@ -13,6 +13,10 @@
   window.__ONECOUNTER_BUSINESS_ID__ = "business-main";
   window.__ONECOUNTER_STORE_ID__ = "store-main";
 
+  // Admin WhatsApp number (international format, digits only) used by the
+  // "Contact admin" link on the login screen. Leave blank to hide the link.
+  window.__ONECOUNTER_ADMIN_WHATSAPP__ = "";
+
   // Public Supabase values (safe to expose). Leave blank by default so the app uses
   // the local credential database unless Supabase is explicitly configured.
   window.__ONECOUNTER_SUPABASE_URL__ = "";

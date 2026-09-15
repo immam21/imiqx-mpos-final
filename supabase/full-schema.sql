@@ -42,6 +42,8 @@ create table if not exists app_users (
 	email text not null unique,
 	full_name text,
 	role text not null default 'manager' check (role in ('cashier', 'manager', 'admin')),
+	business_id uuid,
+	default_store_id uuid,
 	is_active boolean not null default true,
 	created_at timestamptz not null default now(),
 	updated_at timestamptz not null default now()
@@ -200,6 +202,9 @@ create table if not exists orders (
 	promo_code text,
 	promo_discount_amount numeric(12,2) not null default 0,
 	total_amount numeric(12,2) not null default 0,
+	shipping_amount numeric(12,2) not null default 0,
+	tracking_number text,
+	courier text,
 	wallet_balance_after numeric(12,2) not null default 0,
 	sold_by_user_id uuid references app_users(id) on delete set null,
 	sold_by_name text,
@@ -477,3 +482,12 @@ create table if not exists membership_referrals (
 	created_at timestamptz not null default now()
 );
 create index if not exists idx_membership_referrals_referrer on membership_referrals (referrer_member_id, status);
+
+-- Tenant link for app users (added after businesses/stores exist).
+do $$ begin
+	alter table app_users add constraint fk_app_users_business foreign key (business_id) references businesses(id) on delete set null;
+exception when duplicate_object then null; end $$;
+do $$ begin
+	alter table app_users add constraint fk_app_users_default_store foreign key (default_store_id) references stores(id) on delete set null;
+exception when duplicate_object then null; end $$;
+create index if not exists idx_app_users_business on app_users (business_id);

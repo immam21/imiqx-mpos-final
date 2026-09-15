@@ -1001,10 +1001,17 @@
 
   @media (max-width: 900px) { .dash-kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
   @media (max-width: 420px) { .dash-kpi-grid { grid-template-columns: 1fr; } }
+
+  /* Access gate: nothing renders until auth + active-tenant is verified. */
+  #auth-gate { position: fixed; inset: 0; z-index: 2000; display: flex; align-items: center; justify-content: center; gap: 10px; background: var(--color-background); color: var(--color-muted-foreground); font-size: 14px; font-weight: 600; }
+  body.app-ready #auth-gate { display: none; }
+  body:not(.app-ready) #app-shell,
+  body:not(.app-ready) #mobile-nav { display: none !important; }
 </style>
 </head>
 <body>
 <a href="#view-root" class="skip-link">Skip to main content</a>
+<div id="auth-gate"><span class="loading-spinner" aria-hidden="true"></span><span>Checking access&hellip;</span></div>
 <div id="app-shell">
   <div class="sidebar-backdrop" id="sidebar-backdrop" hidden></div>
   <aside class="sidebar">
@@ -1012,8 +1019,8 @@
       <div class="brand">
         <div class="brand-mark">1C</div>
         <div>
-          <div class="display" style="font-size: 18px;">OneCounter</div>
-          <div class="brand-sub mono">Retail OS + Commerce</div>
+          <div class="display" style="font-size: 18px;" id="brand-title">OneCounter</div>
+          <div class="brand-sub mono" id="brand-sub">Retail OS + Commerce</div>
         </div>
       </div>
       <nav id="sidebar-nav" class="nav-list" aria-label="Primary"></nav>
@@ -1187,6 +1194,12 @@
 <script src="vendor/html5-qrcode.min.js"></script>
 <script src="pwa.js"></script>
 <script>
+  // Hard gate: block direct access to the app shell without a stored session.
+  // The app stays hidden (CSS) until bootApp verifies auth + active tenant.
+  if (!localStorage.getItem("onecounter_access_token")) {
+    window.location.replace("login.html?reason=required");
+  }
+
   const money = (n) => "\u20B9" + n.toLocaleString("en-IN");
 
   const APP_CONFIG = {
@@ -1277,6 +1290,7 @@
   const ONLINE_ORDER_STATE = {
     customer: { name: "", phone: "", address: "", city: "", pincode: "" },
     cart: [],
+    shipping: 0,
     markPaid: false,
     paymentMode: "online"
   };
@@ -1796,10 +1810,12 @@
       subtotal += lineSubtotal;
       tax += lineSubtotal * (Number(line.tax_percent) || 0) / 100;
     });
+    const shipping = Math.max(0, Number(ONLINE_ORDER_STATE.shipping || 0));
     return {
       subtotal: Math.round(subtotal * 100) / 100,
       tax: Math.round(tax * 100) / 100,
-      total: Math.round((subtotal + tax) * 100) / 100
+      shipping: Math.round(shipping * 100) / 100,
+      total: Math.round((subtotal + tax + shipping) * 100) / 100
     };
   }
 
@@ -1822,6 +1838,8 @@
       const input = document.getElementById(`online-customer-${field}`);
       if (input) ONLINE_ORDER_STATE.customer[field] = input.value;
     });
+    const shipEl = document.getElementById("online-shipping");
+    if (shipEl) ONLINE_ORDER_STATE.shipping = Number(shipEl.value || 0);
   }
 
   async function onlineAddItem() {
@@ -1906,12 +1924,13 @@
             unit_price: line.unit_price,
             line_total: Math.round(line.qty * line.unit_price * 100) / 100
           })),
-          totals: { subtotal: totals.subtotal, tax_amount: totals.tax, discount_amount: 0, total_amount: totals.total },
+          totals: { subtotal: totals.subtotal, tax_amount: totals.tax, discount_amount: 0, shipping_amount: totals.shipping, total_amount: totals.total },
           payments: ONLINE_ORDER_STATE.markPaid ? [{ mode: ONLINE_ORDER_STATE.paymentMode, amount: totals.total }] : []
         })
       });
       ONLINE_ORDER_STATE.customer = { name: "", phone: "", address: "", city: "", pincode: "" };
       ONLINE_ORDER_STATE.cart = [];
+      ONLINE_ORDER_STATE.shipping = 0;
       ONLINE_ORDER_STATE.markPaid = false;
       ONLINE_ORDER_STATE.paymentMode = "online";
       appState.loaded.orders = false;
@@ -1943,10 +1962,14 @@
           <label>Pincode<input id="online-edit-pincode" type="text" value="${escapeAttr(order.delivery_pincode)}" ${edit ? "" : "readonly"} /></label>
           <label>Status<select id="online-edit-status" ${edit ? "" : "disabled"}>${statuses.map((status) => `<option value="${status}" ${status === String(order.status).toLowerCase() ? "selected" : ""}>${formatOrderStatus(status)}</option>`).join("")}</select></label>
           <label>Payment mode<select id="online-edit-payment" ${edit ? "" : "disabled"}><option value="online">Online</option><option value="upi">UPI</option><option value="card">Card</option><option value="bank">Bank transfer</option></select></label>
+          <label>Courier<input id="online-edit-courier" type="text" value="${escapeAttr(order.courier || "")}" ${edit ? "" : "readonly"} placeholder="e.g. Delhivery, DTDC" /></label>
+          <label>Tracking number<input id="online-edit-tracking" type="text" value="${escapeAttr(order.tracking_number || "")}" ${edit ? "" : "readonly"} placeholder="Tracking / AWB number" /></label>
         </div>
         <div class="table-wrap" style="margin-top:14px;"><table><thead><tr><th>Item</th><th>Qty</th><th>Amount</th></tr></thead><tbody>${order.items.map((item) => `<tr><td>${escapeAttr(item.name)}</td><td class="mono">${item.quantity}</td><td class="mono">${money(item.line_total)}</td></tr>`).join("")}</tbody></table></div>
-        <div class="alert-row" style="margin-top:12px;"><span>Order total</span><strong class="mono">${money(order.total_amount)}</strong></div>
+        ${Number(order.shipping_amount || 0) > 0 ? `<div class="alert-row" style="margin-top:12px;"><span>Shipping</span><span class="mono">${money(order.shipping_amount)}</span></div>` : ""}
+        <div class="alert-row"><span>Order total</span><strong class="mono">${money(order.total_amount)}</strong></div>
         <div class="modal-actions">
+          <button class="btn" type="button" data-action="send-online-receipt" data-order="${escapeAttr(order.order_no)}">Send Receipt (WhatsApp)</button>
           <button class="btn" type="button" data-action="print-shipping-label" data-order="${escapeAttr(order.order_no)}">Print Shipping Label</button>
           ${edit ? `<button class="btn primary" type="button" data-action="save-online-order" data-order="${escapeAttr(order.order_no)}">Save Changes</button>` : `<button class="btn primary" type="button" data-action="edit-online-order" data-order="${escapeAttr(order.order_no)}">Edit Order</button>`}
         </div>`;
@@ -1971,7 +1994,9 @@
           delivery_city: fieldVal("online-edit-city"),
           delivery_pincode: fieldVal("online-edit-pincode"),
           status: fieldVal("online-edit-status"),
-          payment_mode: fieldVal("online-edit-payment")
+          payment_mode: fieldVal("online-edit-payment"),
+          tracking_number: fieldVal("online-edit-tracking"),
+          courier: fieldVal("online-edit-courier")
         })
       });
       appState.onlineOrders = await apiFetch("/v1/online-orders");
@@ -1980,6 +2005,33 @@
       showToast(`Online order updated: ${orderNo}`);
     } catch (err) {
       showToast("Online order update failed: " + (err.message || "error"));
+    }
+  }
+
+  async function sendOnlineReceiptWhatsApp(orderNo) {
+    try {
+      const order = await apiFetch(`/v1/online-orders/detail?order_no=${encodeURIComponent(orderNo)}`);
+      const phone = String(order.customer_phone || "").replace(/\D/g, "");
+      if (!phone) {
+        showToast("No customer mobile number on this order");
+        return;
+      }
+      const bizName = await getBusinessName();
+      const ebillUrl = `${window.location.origin}/receipt.html?id=${encodeURIComponent(order.order_no)}`;
+      const trackingLine = order.tracking_number
+        ? `Courier: ${order.courier || "-"}\nTracking: ${order.tracking_number}\n`
+        : "Tracking: will be updated soon.\n";
+      const msg = `*${bizName}*\n\nOrder: ${order.order_no}\nCustomer: ${order.customer_name || "-"}\nTotal: ${money(order.total_amount)}\n${trackingLine}\nView your bill: ${ebillUrl}\n\nThank you for shopping with us!`;
+      const waNumber = phone.length === 10 ? `91${phone}` : phone;
+      try {
+        await apiFetch(API_ENDPOINTS.whatsappReceipt, { method: "POST", body: JSON.stringify({ phone: order.customer_phone, reference_id: order.order_no, template: "ONLINE_BILL_V1", message: msg }) });
+      } catch (_) {
+        // best-effort logging
+      }
+      window.open(`https://wa.me/${waNumber}?text=${encodeURIComponent(msg)}`, "_blank");
+      showToast("Opening WhatsApp with receipt");
+    } catch (_) {
+      showToast("Unable to send receipt");
     }
   }
 
@@ -2234,7 +2286,7 @@
       posRerender();
       if (c.searched && !c.existing) {
         const nameEl = document.getElementById("pos-cust-name");
-        if (nameEl) nameEl.focus();
+        focusUnlessTouch(nameEl);
       }
     }
   }
@@ -2450,7 +2502,7 @@
     const manualDiscount = Number(sale.totals?.manual_discount || sale.totals?.discount || 0);
     const walletDiscount = Number(sale.membership_discount || 0);
     return (
-      `*${bizName}*\n` +
+      `*${bizName}*\n\n` +
       `Bill: ${sale.sale_id}\n` +
       `Date: ${new Date(sale.at).toLocaleString()}\n` +
       `Customer: ${sale.customer.name}\n\n` +
@@ -2461,8 +2513,8 @@
       `${manualDiscount > 0 ? `Manual discount: -${money(manualDiscount)}\n` : ""}` +
       `${walletDiscount > 0 ? `Wallet discount: -${money(walletDiscount)}\n` : ""}` +
       `*Total: ${money(sale.totals.total)}*\n` +
-      `${sale.paid === false ? "Payment: PENDING" : "Paid via " + String(sale.mode || "cash").toUpperCase()}\n\n` +
-      `View your e-bill: ${ebillUrl}\n\n` +
+      `${sale.paid === false ? "Payment: PENDING" : "Paid via " + String(sale.mode || "cash").toUpperCase()}\n\n\n` +
+      `View your e-bill: ${ebillUrl}\n\n\n` +
       `Thank you for shopping with us!`
     );
   }
@@ -2613,6 +2665,16 @@
     return "Rs " + Number(n || 0).toFixed(2);
   }
 
+  // On touch devices, auto-focusing a field pops the on-screen keyboard; skip it
+  // so the keypad only appears when the user taps the field.
+  function isTouchDevice() {
+    return (typeof navigator !== "undefined" && Number(navigator.maxTouchPoints) > 0)
+      || (typeof window !== "undefined" && (("ontouchstart" in window) || (window.matchMedia && window.matchMedia("(pointer: coarse)").matches)));
+  }
+  function focusUnlessTouch(el) {
+    if (el && !isTouchDevice()) el.focus();
+  }
+
   const LABEL_SIZES = {
     "25x20": { width: 25, height: 20, businessY: 2.4, businessSize: 5, nameY: 4.3, nameSize: 4.2, nameLength: 20, codeY: 6.1, codeSize: 4, mrpY: 9, priceY: 11.4, mrpSize: 4.4, offerSize: 7, priceMaxWidth: 21, tagX: 14, tagY: 6.8, tagWidth: 8.5, offerLabelY: 7.9, offerPriceY: 11.7, barcodeX: 2, barcodeY: 12.1, barcodeWidth: 21, barcodeHeight: 5.2, barcodeValueY: 18.3, barcodeValueSize: 4.5 },
     "50x25": { width: 50, height: 25, businessY: 3.2, businessSize: 8, nameY: 6.1, nameSize: 7, nameLength: 34, codeY: 8.7, codeSize: 5.5, mrpY: 12, priceY: 15.1, mrpSize: 6.5, offerSize: 10.5, priceMaxWidth: 46, tagX: 36.5, tagY: 9.2, tagWidth: 10.5, offerLabelY: 10.5, offerPriceY: 15.3, barcodeX: 4, barcodeY: 15.6, barcodeWidth: 42, barcodeHeight: 6.2, barcodeValueY: 23.6, barcodeValueSize: 6 },
@@ -2736,7 +2798,7 @@
       submitButton.textContent = action === "download" ? "Download PDF Labels" : "Create Print Labels";
     }
     document.getElementById("label-print-modal").classList.add("show");
-    document.getElementById("label-print-copies").focus();
+    focusUnlessTouch(document.getElementById("label-print-copies"));
   }
 
   function closeLabelPrintModal() {
@@ -2949,7 +3011,7 @@
         ${edit ? `<button class="btn primary" type="button" data-action="save-inventory-edit">Save Changes</button>` : `<button class="btn" type="button" data-action="add-stock">Add Stock</button><button class="btn" type="button" data-action="add-stock-download">Add & Download Label</button><button class="btn primary" type="button" data-action="add-stock-print">Add & Print Label</button>`}
       </div>`;
     document.getElementById("stock-modal").classList.add("show");
-    document.getElementById("stock-name").focus();
+    focusUnlessTouch(document.getElementById("stock-name"));
   }
 
   function closeStockModal() {
@@ -3234,7 +3296,7 @@
         <button class="btn primary" type="button" data-action="save-promo">${isEdit ? "Save Changes" : "Create Promo Code"}</button>
       </div>`;
     document.getElementById("promo-modal").classList.add("show");
-    document.getElementById("promo-code").focus();
+    focusUnlessTouch(document.getElementById("promo-code"));
   }
 
   function closePromoModal() {
@@ -3348,7 +3410,7 @@
         <button class="btn primary" type="button" data-action="save-purchase">${isEdit ? "Save Changes" : "Add Purchase"}</button>
       </div>`;
     document.getElementById("purchase-modal").classList.add("show");
-    document.getElementById("purchase-date").focus();
+    focusUnlessTouch(document.getElementById("purchase-date"));
   }
 
   function closePurchaseModal() {
@@ -3927,7 +3989,7 @@
     { id: "rate-calculator", label: "Rate Calculator", short: "Rates" },
     { id: "expenses", label: "Expenses", short: "Costs" },
     { id: "purchases", label: "Purchase Orders", short: "Buy" },
-    { id: "store", label: "Online Store", short: "Store" },
+    { id: "store", label: "Manual Orders", short: "Manual" },
     { id: "customers", label: "Customer Book", short: "People" },
     { id: "promotions", label: "Campaigns", short: "Promo" },
     { id: "promocodes", label: "Promo Codes", short: "Codes" },
@@ -3963,7 +4025,7 @@
     "rate-calculator": ["Rate Calculator", "Build a selling price from product and operating costs"],
     expenses: ["Expenses", "Shop, operating, and miscellaneous costs"],
     purchases: ["Purchase Orders", "Track money spent buying stock and supplies"],
-    store: ["Online Store", "Customer-facing storefront connected to live stock"],
+    store: ["Manual Orders", "Create and track manual / online orders, shipping, and courier tracking"],
     customers: ["Customers", "Segments, RFM context, and customer timeline"],
     promotions: ["Promotions", "Audience, offer, channel, schedule, approval workflow"],
     promocodes: ["Promo Codes", "Create and manage discount codes applied at checkout"],
@@ -4838,13 +4900,14 @@
         </div>
         <div class="section grid two-col">
           <article class="card reveal">
-            <h3 class="panel-title">Create Online Order</h3>
+            <h3 class="panel-title">Create Manual Order</h3>
             <div class="grid two-col">
               <label class="field"><span>Customer name *</span><input id="online-customer-name" type="text" value="${escapeAttr(customer.name)}" /></label>
               <label class="field"><span>Phone *</span><input id="online-customer-phone" type="tel" inputmode="numeric" value="${escapeAttr(customer.phone)}" /></label>
               <label class="field" style="grid-column:1 / -1;"><span>Full address *</span><input id="online-customer-address" type="text" value="${escapeAttr(customer.address)}" /></label>
               <label class="field"><span>City *</span><input id="online-customer-city" type="text" value="${escapeAttr(customer.city)}" /></label>
               <label class="field"><span>Pincode *</span><input id="online-customer-pincode" type="text" inputmode="numeric" value="${escapeAttr(customer.pincode)}" /></label>
+              <label class="field"><span>Shipping charges (₹)</span><input id="online-shipping" type="number" min="0" step="0.01" value="${Number(ONLINE_ORDER_STATE.shipping || 0)}" /></label>
               <label class="field" style="grid-column:1 / -1;"><span>Scan / SKU</span><input id="online-scan" type="text" list="online-catalog" autocomplete="off" placeholder="Scan barcode or enter SKU" /></label>
             </div>
             <datalist id="online-catalog">${catalogOptions}</datalist>
@@ -4857,14 +4920,19 @@
             <div style="margin-top:10px;"><button class="btn primary" type="button" data-action="online-add-item">Add Item</button></div>
           </article>
           <article class="card reveal">
-            <h3 class="panel-title">Online Order Cart</h3>
-            <div class="table-wrap"><table><thead><tr><th>Item</th><th>Qty</th><th>Amount</th></tr></thead><tbody>${cart.map((line) => `<tr><td>${line.name}<div class="mono muted">${line.sku}</div></td><td><button class="btn" type="button" data-action="online-qty" data-sku="${line.sku}" data-delta="-1">-</button> ${line.qty} <button class="btn" type="button" data-action="online-qty" data-sku="${line.sku}" data-delta="1">+</button></td><td class="mono">${money(line.qty * line.unit_price)}</td></tr>`).join("") || `<tr><td colspan="3">No items added.</td></tr>`}</tbody></table></div>
-            <div class="alert-row" style="margin-top:10px;"><strong>Total</strong><strong class="mono">${money(totals.total)}</strong></div>
-            <div style="margin-top:10px;"><button class="btn primary" type="button" data-action="submit-online-order">Create Online Order</button></div>
+            <h3 class="panel-title">Order Cart</h3>
+            <div class="table-wrap"><table><thead><tr><th>Item</th><th>Qty</th><th>Rate</th><th>Amount</th></tr></thead><tbody>${cart.map((line) => `<tr><td>${line.name}<div class="mono muted">${line.sku}</div></td><td><button class="btn" type="button" data-action="online-qty" data-sku="${line.sku}" data-delta="-1">-</button> ${line.qty} <button class="btn" type="button" data-action="online-qty" data-sku="${line.sku}" data-delta="1">+</button></td><td class="mono">${money(line.unit_price)}</td><td class="mono">${money(line.qty * line.unit_price)}</td></tr>`).join("") || `<tr><td colspan="4">No items added.</td></tr>`}</tbody></table></div>
+            <div class="mono" style="margin-top:10px; display:grid; gap:6px; font-size:12px;">
+              <div style="display:flex; justify-content:space-between;"><span>Subtotal</span><span>${money(totals.subtotal)}</span></div>
+              <div style="display:flex; justify-content:space-between;"><span>GST</span><span>${money(totals.tax)}</span></div>
+              <div style="display:flex; justify-content:space-between;"><span>Shipping</span><span id="online-shipping-value">${money(totals.shipping)}</span></div>
+            </div>
+            <div class="alert-row" style="margin-top:6px;"><strong>Total</strong><strong class="mono" id="online-order-total">${money(totals.total)}</strong></div>
+            <div style="margin-top:10px;"><button class="btn primary" type="button" data-action="submit-online-order">Create Manual Order</button></div>
           </article>
         </div>
         <article class="section card reveal">
-          <h3 class="panel-title">Online Orders</h3>
+          <h3 class="panel-title">Manual Orders</h3>
           <div class="table-wrap"><table><thead><tr><th>Order</th><th>Customer</th><th>Destination</th><th>Amount</th><th>Payment / Status</th><th>Date & Time</th><th>Actions</th></tr></thead><tbody>
             ${onlineOrders.map((order) => `<tr><td class="mono">${order.order_no}</td><td>${order.customer_name || "-"}</td><td>${[order.delivery_city, order.delivery_pincode].filter(Boolean).join(" ") || "-"}</td><td class="mono">${money(order.total_amount)}</td><td><span class="chip ${String(order.status).toLowerCase() === "paid" ? "good" : "warn"}">${order.status}</span></td><td class="mono">${formatDateTime(order.created_at)}</td><td style="display:flex; gap:6px; flex-wrap:wrap;"><button class="btn" type="button" data-action="view-online-order" data-order="${escapeAttr(order.order_no)}">View</button><button class="btn" type="button" data-action="edit-online-order" data-order="${escapeAttr(order.order_no)}">Edit</button><button class="btn" type="button" data-action="print-shipping-label" data-order="${escapeAttr(order.order_no)}">Shipping Label</button></td></tr>`).join("") || `<tr><td colspan="7">No online orders yet.</td></tr>`}
           </tbody></table></div>
@@ -4973,6 +5041,22 @@
     window.setTimeout(() => el.classList.remove("show"), 1800);
   }
 
+  // Reveal the app only after auth + active-tenant verification succeeds.
+  function revealApp() {
+    document.body.classList.add("app-ready");
+    const gate = document.getElementById("auth-gate");
+    if (gate) gate.remove();
+  }
+
+  function applyBusinessBranding() {
+    const name = (appState.settings && appState.settings.business_name) || "";
+    const title = document.getElementById("brand-title");
+    if (title) title.textContent = name || "OneCounter";
+    const sub = document.getElementById("brand-sub");
+    if (sub) sub.textContent = name ? (authState.userEmail || "Retail OS") : "Retail OS + Commerce";
+    if (name) document.title = name + " — OneCounter";
+  }
+
   function showWelcomeScreen() {
     const businessName = (appState.settings && appState.settings.business_name) || "OneCounter";
     document.getElementById("welcome-business").textContent = businessName;
@@ -5034,7 +5118,7 @@
       const cls = Number(p.qty) <= Number(p.reorder_level) ? "warn" : "good";
       const enc = encodeURIComponent(JSON.stringify({ sku: p.sku, name: p.name, hsn: p.hsn || "", tax_percent: p.tax_percent || 0, qty: p.qty || 0, price: p.price || 0, mrp: p.mrp || 0, cost_price: p.cost_price || 0, reorder_level: p.reorder_level || 0, location: p.location || "" }));
       const mrpCell = (p.mrp && p.mrp > (p.price || 0)) ? `<span style="text-decoration:line-through; color:var(--color-muted-foreground);">${money(p.mrp)}</span>` : money(p.mrp || p.price || 0);
-      return `<tr><td><input type="checkbox" class="label-select" data-product="${enc}" /></td><td class="mono">${p.sku}</td><td>${p.name}</td><td class="mono">${money(p.cost_price || 0)}</td><td class="mono">${mrpCell}</td><td class="mono">${money(p.price || 0)}</td><td>${p.qty}</td><td>${p.reorder_level}</td><td><span class="chip ${cls}">${Number(p.qty) <= Number(p.reorder_level) ? "Low" : "Healthy"}</span></td><td style="display:flex; gap:6px; flex-wrap:wrap;"><button class="btn" type="button" data-action="edit-inventory" data-product="${enc}">Edit</button><button class="btn" type="button" data-action="print-label" data-product="${enc}">Print</button><button class="btn" type="button" data-action="download-label" data-product="${enc}">Download PDF</button><button class="btn danger" type="button" data-action="delete-inventory" data-product="${enc}">Delete</button></td></tr>`;
+      return `<tr><td><input type="checkbox" class="label-select" data-product="${enc}" /></td><td class="mono">${p.sku}</td><td>${p.name}</td><td class="mono">${money(p.cost_price || 0)}</td><td class="mono">${mrpCell}</td><td class="mono">${money(p.price || 0)}</td><td>${p.qty}</td><td>${p.reorder_level}</td><td><span class="chip ${cls}">${Number(p.qty) <= Number(p.reorder_level) ? "Low" : "Healthy"}</span></td><td><div style="display:flex; gap:6px; flex-wrap:nowrap; white-space:nowrap;"><button class="btn compact" type="button" data-action="edit-inventory" data-product="${enc}">Edit</button><button class="btn compact" type="button" data-action="print-label" data-product="${enc}">Print</button><button class="btn compact" type="button" data-action="download-label" data-product="${enc}">PDF</button><button class="btn danger compact" type="button" data-action="delete-inventory" data-product="${enc}">Delete</button></div></td></tr>`;
     }).join("") || `<tr><td colspan="10">No stock data.</td></tr>`;
   }
 
@@ -5107,7 +5191,7 @@
             posAddItem();
           }
         });
-        scan.focus();
+        focusUnlessTouch(scan);
       }
 
       if (tabId === "store") {
@@ -5573,6 +5657,10 @@
         printShippingLabel(actionBtn.dataset.order);
         return;
       }
+      if (action === "send-online-receipt") {
+        sendOnlineReceiptWhatsApp(actionBtn.dataset.order);
+        return;
+      }
       if (action === "open-cash-session") {
         saveCashSession("open");
         return;
@@ -5701,6 +5789,13 @@
       if (POS_STATE.customer.referralCode.length === 5) {
         posReferralLookup();
       }
+    } else if (event.target.id === "online-shipping") {
+      ONLINE_ORDER_STATE.shipping = Math.max(0, Number(event.target.value || 0));
+      const totals = onlineOrderTotals();
+      const shipEl = document.getElementById("online-shipping-value");
+      const totalEl = document.getElementById("online-order-total");
+      if (shipEl) shipEl.textContent = money(totals.shipping);
+      if (totalEl) totalEl.textContent = money(totals.total);
     }
   });
 
@@ -5892,6 +5987,7 @@
       } catch (_) {
         // The welcome screen uses the product name when business settings are unavailable.
       }
+      applyBusinessBranding();
       await setActive("pos");
       showWelcomeScreen();
     } catch (_) {
@@ -5912,9 +6008,34 @@
     scheduleTokenRefresh();
     scheduleSessionTimeouts();
 
+    // Load the tenant's stores (this call also enforces active-tenant status).
+    let tenantStores = [];
+    try {
+      const data = await apiFetch("/v1/stores");
+      tenantStores = (data && data.items) || [];
+      if (data && data.current_store_code && !tenantStores.some((s) => s.code === appState.currentStoreId)) {
+        appState.currentStoreId = data.current_store_code;
+      }
+    } catch (err) {
+      if (String((err && err.message) || "").includes("business_inactive")) {
+        clearAuthSession();
+        updateAuthUi();
+        window.location.replace("login.html?reason=deactivated");
+        return;
+      }
+    }
+
     const storeSelect = document.getElementById("store-select");
     const roleSelect = document.getElementById("role-select");
     if (storeSelect) {
+      if (tenantStores.length) {
+        const escOpt = (v) => String(v).replace(/</g, "&lt;").replace(/"/g, "&quot;");
+        storeSelect.innerHTML = tenantStores.map((s) => `<option value="${escOpt(s.code)}">${escOpt(s.name)}</option>`).join("");
+        if (!tenantStores.some((s) => s.code === appState.currentStoreId)) {
+          appState.currentStoreId = tenantStores[0].code;
+        }
+        localStorage.setItem("onecounter_store_id", appState.currentStoreId);
+      }
       storeSelect.value = appState.currentStoreId;
       storeSelect.addEventListener("change", () => {
         appState.currentStoreId = storeSelect.value;
@@ -5938,12 +6059,15 @@
 
     renderNav();
     renderMobileNav();
+    // Verified and authorized — safe to reveal the app now.
+    revealApp();
     try {
       appState.settings = await apiFetch(API_ENDPOINTS.settings);
       appState.loaded.settings = true;
     } catch (_) {
       // The welcome screen uses the product name when business settings are unavailable.
     }
+    applyBusinessBranding();
     await setActive("pos");
     showWelcomeScreen();
   }

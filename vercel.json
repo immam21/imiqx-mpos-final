@@ -1,0 +1,6 @@
+{
+  "cleanUrls": false,
+  "rewrites": [
+    { "source": "/admindesk", "destination": "/admindesk.html" }
+  ]
+}
