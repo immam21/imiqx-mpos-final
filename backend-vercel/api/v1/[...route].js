@@ -1210,7 +1210,7 @@ module.exports = async function handler(req, res) {
       const [balances, prices] = await Promise.all([
         sbSelect(
           "inventory_balances",
-          `select=product_id,qty_on_hand,reorder_level,products!inner(sku,name)&store_id=eq.${ctx.storeId}`
+          `select=product_id,qty_on_hand,reorder_level,products!inner(sku,name,is_active)&store_id=eq.${ctx.storeId}&products.is_active=eq.true`
         ),
         sbSelect(
           "product_prices",
@@ -1221,20 +1221,22 @@ module.exports = async function handler(req, res) {
       prices.forEach((price) => {
         if (!priceByProduct[price.product_id]) priceByProduct[price.product_id] = price;
       });
-      const items = balances.map((balance) => {
-        const price = priceByProduct[balance.product_id] || {};
-        return {
-          sku: balance.products && balance.products.sku,
-          name: balance.products && balance.products.name,
-          quantity: Number(balance.qty_on_hand || 0),
-          reorder_level: Number(balance.reorder_level || 0),
-          mrp: Number(price.mrp || 0),
-          selling_price: Number(price.selling_price || 0),
-          cost_price: Number(price.cost_price || 0),
-          inventory_value: Number(balance.qty_on_hand || 0) * Number(price.cost_price || 0)
-        };
-      });
-      sendJson(res, 200, { items, total_value: items.reduce((total, item) => total + item.inventory_value, 0) });
+      const activeItems = balances
+        .filter((balance) => balance.products && balance.products.is_active !== false)
+        .map((balance) => {
+          const price = priceByProduct[balance.product_id] || {};
+          return {
+            sku: balance.products.sku,
+            name: balance.products.name,
+            quantity: Number(balance.qty_on_hand || 0),
+            reorder_level: Number(balance.reorder_level || 0),
+            mrp: Number(price.mrp || 0),
+            selling_price: Number(price.selling_price || 0),
+            cost_price: Number(price.cost_price || 0),
+            inventory_value: Number(balance.qty_on_hand || 0) * Number(price.cost_price || 0)
+          };
+        });
+      sendJson(res, 200, { items: activeItems, total_value: activeItems.reduce((total, item) => total + item.inventory_value, 0) });
       return;
     }
 
