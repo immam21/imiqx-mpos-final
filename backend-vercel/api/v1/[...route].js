@@ -821,6 +821,15 @@ module.exports = async function handler(req, res) {
       return;
     }
 
+    // Super-admin: trigger the full platform (all-tenant) Google Sheets backup on demand.
+    if (pathname === "/v1/admin/backup" && req.method === "POST") {
+      const body = await parseBody(req);
+      if (!isSuperAdmin(req, body)) { sendJson(res, 403, { error: "invalid_admin_code" }); return; }
+      const result = await runBackup();
+      sendJson(res, 200, result);
+      return;
+    }
+
     // Public e-bill: view a receipt by order number (no auth, no store headers).
     if (pathname === "/v1/receipt" && req.method === "GET") {
       const url = new URL(req.url, "http://localhost");
@@ -2034,13 +2043,12 @@ module.exports = async function handler(req, res) {
     }
 
     if (pathname === "/v1/integrations/google-sheets-sync" && req.method === "POST") {
-      const actor = await resolveActor(req);
-      if (!actor) {
-        sendJson(res, 401, { error: "authentication_required" });
-        return;
-      }
-      const result = await runBackup();
-      sendJson(res, 200, result);
+      // Ad-hoc backup is disabled for tenants: the platform backup is global
+      // (all tenants) and runs automatically via cron at 1:00 AM IST.
+      sendJson(res, 403, {
+        error: "manual_backup_disabled",
+        message: "Automatic backup runs daily at 1:00 AM IST. Manual backup is available to platform admins only."
+      });
       return;
     }
 
