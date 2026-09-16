@@ -4429,8 +4429,8 @@
           <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap;">
             <div><h3 style="margin:0;">Stock Management</h3><p class="muted" style="margin:4px 0 0;">Add new products or update any existing stock details.</p></div>
             <div style="display:flex; gap:8px; flex-wrap:wrap;">
-              <button class="btn" type="button" data-action="import-stock-open">Import Excel/CSV</button>
-              <button class="btn primary" type="button" data-action="open-stock-add">Add Stock</button>
+              ${isAdminRole() ? `<button class="btn" type="button" data-action="import-stock-open">Import Excel/CSV</button>
+              <button class="btn primary" type="button" data-action="open-stock-add">Add Stock</button>` : ""}
             </div>
           </div>
         </div>
@@ -4586,7 +4586,7 @@
         : "";
 
       return `
-        <div class="section card reveal">
+        ${isAdminRole() ? `<div class="section card reveal">
           <h3 class="panel-title">Add Customer</h3>
           <div class="grid four-col">
             <label class="field"><span aria-hidden="true">Name *</span><input id="cust-add-name" type="text" placeholder="Customer name" /></label>
@@ -4594,7 +4594,7 @@
             <label class="field"><span aria-hidden="true">Place</span><input id="cust-add-place" type="text" placeholder="City / locality" /></label>
             <button class="btn primary" type="button" data-action="cust-save">Save Customer</button>
           </div>
-        </div>
+        </div>` : ""}
 
         <div class="section card reveal">
           <div class="grid four-col" style="align-items:end;">
@@ -4932,8 +4932,10 @@
             <div class="alert-row"><span>Schedule</span><span class="mono">${iData.sheet_schedule || "-"}</span></div>
             <div class="alert-row"><span>Last sync</span><span class="mono">${iData.sheet_last_run ? new Date(iData.sheet_last_run).toLocaleString("en-IN") : "Never"}</span></div>
             <div class="alert-row"><span>Status</span><span class="chip ${iData.sheet_sync_status === "success" ? "good" : iData.sheet_sync_status === "error" ? "danger" : "warn"}">${iData.sheet_sync_status === "success" ? "Success" : iData.sheet_sync_status === "error" ? "Error" : "Not run"}</span></div>
+            <div class="alert-row"><span>Automatic backup</span><span class="chip good">Daily at 1:00 AM IST</span></div>
             <div class="alert-row"><span>${iData.sheet_sync_status === "error" ? "Last error" : "Last result"}</span><span style="max-width:60%; text-align:right; overflow-wrap:anywhere;">${iData.sheet_sync_detail || "No backup run recorded yet"}</span></div>
-            <button class="btn primary" type="button" data-action="run-google-sheets-sync">Run Sync Now</button>
+            <button class="btn" type="button" disabled title="Automatic backup runs daily at 1:00 AM IST for all tenants">Auto-backup enabled</button>
+            <p class="muted" style="font-size:11.5px; margin:8px 0 0;">Backups run automatically every night. Manual sync is handled by the platform admin.</p>
           </article>
           <article class="card reveal">
             <h3 class="panel-title">Webhook Reliability</h3>
@@ -5075,15 +5077,26 @@
     }
   };
 
+  // ---- Role-based access control (two roles: admin, manager) ----
+  // Managers see a limited set of tabs; admins have full access.
+  const MANAGER_TABS = ["pos", "store", "inventory", "customers", "memberships", "rate-calculator"];
+  function isAdminRole() {
+    return String(authState.role || appState.currentRole || "").toLowerCase() === "admin";
+  }
+  function isTabAllowed(tabId) {
+    if (isAdminRole()) return true;
+    return MANAGER_TABS.includes(tabId);
+  }
+
   function renderNav() {
-    const navHtml = NAV.map((n) => `<button class="nav-btn" data-tab="${n.id}" type="button">${n.label}</button>`).join("");
+    const navHtml = NAV.filter((n) => isTabAllowed(n.id)).map((n) => `<button class="nav-btn" data-tab="${n.id}" type="button">${n.label}</button>`).join("");
     document.getElementById("sidebar-nav").innerHTML = navHtml;
   }
 
   function renderMobileNav() {
     const host = document.getElementById("mobile-nav");
     if (!host) return;
-    host.innerHTML = MOBILE_NAV.map((n) => {
+    host.innerHTML = MOBILE_NAV.filter((n) => n.id === "__more" || isTabAllowed(n.id)).map((n) => {
       const iconKey = n.id === "__more" ? "more" : n.id;
       const icon = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${MOBILE_NAV_ICONS[iconKey] || MOBILE_NAV_ICONS.more}</svg>`;
       const attrs = n.id === "__more"
@@ -5148,6 +5161,10 @@
   }
 
   async function setActive(tabId) {
+    // RBAC: managers only reach their allowed tabs; anything else falls back to POS.
+    if (!isTabAllowed(tabId)) {
+      tabId = "pos";
+    }
     appState.activeTab = tabId;
     const name = TITLES[tabId] || TITLES.dashboard;
     document.getElementById("view-title").textContent = name[0];
@@ -5196,7 +5213,7 @@
       const cls = Number(p.qty) <= Number(p.reorder_level) ? "warn" : "good";
       const enc = encodeURIComponent(JSON.stringify({ sku: p.sku, name: p.name, hsn: p.hsn || "", tax_percent: p.tax_percent || 0, qty: p.qty || 0, price: p.price || 0, mrp: p.mrp || 0, cost_price: p.cost_price || 0, reorder_level: p.reorder_level || 0, location: p.location || "" }));
       const mrpCell = (p.mrp && p.mrp > (p.price || 0)) ? `<span style="text-decoration:line-through; color:var(--color-muted-foreground);">${money(p.mrp)}</span>` : money(p.mrp || p.price || 0);
-      return `<tr><td><input type="checkbox" class="label-select" data-product="${enc}" /></td><td class="mono">${p.sku}</td><td>${p.name}</td><td class="mono">${money(p.cost_price || 0)}</td><td class="mono">${mrpCell}</td><td class="mono">${money(p.price || 0)}</td><td>${p.qty}</td><td>${p.reorder_level}</td><td><span class="chip ${cls}">${Number(p.qty) <= Number(p.reorder_level) ? "Low" : "Healthy"}</span></td><td><div style="display:flex; gap:6px; flex-wrap:nowrap; white-space:nowrap;"><button class="btn compact" type="button" data-action="edit-inventory" data-product="${enc}">Edit</button><button class="btn compact" type="button" data-action="print-label" data-product="${enc}">Print</button><button class="btn compact" type="button" data-action="download-label" data-product="${enc}">PDF</button><button class="btn danger compact" type="button" data-action="delete-inventory" data-product="${enc}">Delete</button></div></td></tr>`;
+      return `<tr><td><input type="checkbox" class="label-select" data-product="${enc}" /></td><td class="mono">${p.sku}</td><td>${p.name}</td><td class="mono">${money(p.cost_price || 0)}</td><td class="mono">${mrpCell}</td><td class="mono">${money(p.price || 0)}</td><td>${p.qty}</td><td>${p.reorder_level}</td><td><span class="chip ${cls}">${Number(p.qty) <= Number(p.reorder_level) ? "Low" : "Healthy"}</span></td><td><div style="display:flex; gap:6px; flex-wrap:nowrap; white-space:nowrap;">${isAdminRole() ? `<button class="btn compact" type="button" data-action="edit-inventory" data-product="${enc}">Edit</button>` : ""}<button class="btn compact" type="button" data-action="print-label" data-product="${enc}">Print</button><button class="btn compact" type="button" data-action="download-label" data-product="${enc}">PDF</button>${isAdminRole() ? `<button class="btn danger compact" type="button" data-action="delete-inventory" data-product="${enc}">Delete</button>` : ""}</div></td></tr>`;
     }).join("") || `<tr><td colspan="10">No stock data.</td></tr>`;
   }
 
@@ -6105,6 +6122,18 @@
 
     const storeSelect = document.getElementById("store-select");
     const roleSelect = document.getElementById("role-select");
+    // Resolve the authoritative role (app_users.role) for RBAC before building nav.
+    try {
+      const me = await apiFetch("/v1/me");
+      if (me && me.role) {
+        authState.role = me.role;
+        appState.currentRole = me.role;
+        localStorage.setItem("onecounter_role", me.role);
+        persistAuth();
+      }
+    } catch (_) {
+      // Fall back to the stored role if /v1/me is unavailable.
+    }
     if (storeSelect) {
       if (tenantStores.length) {
         const escOpt = (v) => String(v).replace(/</g, "&lt;").replace(/"/g, "&quot;");
