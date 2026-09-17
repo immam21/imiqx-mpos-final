@@ -1388,13 +1388,14 @@ module.exports = async function handler(req, res) {
     if (pathname === "/v1/orders" && req.method === "GET") {
       const rows = await sbSelect(
         "orders",
-        `select=order_no,channel,customer_name,total_amount,status,created_at&or=(store_id.eq.${ctx.storeId},channel.eq.online)&order=created_at.desc`
+        `select=order_no,channel,customer_name,total_amount,status,created_at,customers(phone)&business_id=eq.${ctx.businessId}&or=(store_id.eq.${ctx.storeId},channel.eq.online)&order=created_at.desc`
       );
       sendJson(res, 200, {
         items: rows.map((o) => ({
           order_no: o.order_no,
           channel: channelLabel(o.channel),
           customer_name: o.customer_name,
+          customer_phone: (o.customers && o.customers.phone) || "",
           total_amount: Number(o.total_amount || 0),
           status: titleCaseStatus(o.status),
           created_at: o.created_at
