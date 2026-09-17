@@ -2036,6 +2036,26 @@
     }
   }
 
+  // Send an e-bill WhatsApp message for any order (in-store or online) shown in the Orders tab.
+  async function sendOrderEbill(orderNo, phone, customerName) {
+    const digits = String(phone || "").replace(/\D/g, "");
+    if (!digits) {
+      showToast("No customer mobile number on this order");
+      return;
+    }
+    const bizName = await getBusinessName();
+    const ebillUrl = `${window.location.origin}/receipt.html?id=${encodeURIComponent(orderNo)}`;
+    const msg = `*${bizName}*\n\nOrder: ${orderNo}\nCustomer: ${customerName || "-"}\n\nView your bill: ${ebillUrl}\n\nThank you for shopping with us!`;
+    const waNumber = digits.length === 10 ? `91${digits}` : digits;
+    try {
+      await apiFetch(API_ENDPOINTS.whatsappReceipt, { method: "POST", body: JSON.stringify({ phone, reference_id: orderNo, template: "BILL_V1", message: msg }) });
+    } catch (_) {
+      // best-effort logging
+    }
+    window.open(`https://wa.me/${waNumber}?text=${encodeURIComponent(msg)}`, "_blank");
+    showToast("Opening WhatsApp with e-bill");
+  }
+
   // Build the inner HTML for one 4in x 6in shipping label (SHIP TO, order, invoice, FROM).
   function shippingLabelHtml(order, rc) {
     const biz = (rc && rc.business) || {};
@@ -2054,11 +2074,6 @@
       || `<tr><td colspan="3">No items</td></tr>`;
     return `
       <div class="lbl">
-        <div class="from">
-          <div class="cap">FROM</div>
-          <div class="fname">${escapeAttr(fromName)}</div>
-          ${fromLines}
-        </div>
         <div class="ship">
           <div class="cap">SHIP TO</div>
           <div class="sname">${escapeAttr(order.customer_name || "-")}</div>
@@ -2067,6 +2082,11 @@
           <div>Ph: ${escapeAttr(order.customer_phone || "")}</div>
           ${order.courier ? `<div>Courier: ${escapeAttr(order.courier)}</div>` : ""}
           ${order.tracking_number ? `<div>AWB: ${escapeAttr(order.tracking_number)}</div>` : ""}
+        </div>
+        <div class="from">
+          <div class="cap">FROM (Return Address)</div>
+          <div class="fname">${escapeAttr(fromName)}</div>
+          ${fromLines}
         </div>
         <div class="ord">${escapeAttr(order.order_no)}</div>
         <table class="items"><thead><tr><th>Item</th><th class="c">Qty</th><th class="r">Amt</th></tr></thead><tbody>${rows}</tbody></table>
@@ -2107,10 +2127,13 @@
         ${pageCss}
         .lbl { border:1.5px solid #000; padding:8px; overflow:hidden; page-break-inside:avoid; display:flex; flex-direction:column; }
         .cap { font-size:9px; font-weight:700; letter-spacing:.06em; color:#000; border-bottom:1px solid #000; padding-bottom:2px; margin-bottom:3px; }
-        .from { font-size:10px; }
+        .ship { border:2px solid #000; padding:8px; }
+        .ship .cap { font-size:13px; letter-spacing:.1em; border-bottom:2px solid #000; padding-bottom:3px; margin-bottom:5px; }
+        .ship .sname { font-weight:800; font-size:22px; line-height:1.1; }
+        .ship > div:not(.cap):not(.sname) { font-size:14px; line-height:1.35; }
+        .from { font-size:10px; margin-top:8px; }
+        .from .cap { font-size:8px; }
         .from .fname { font-weight:700; font-size:12px; }
-        .ship { margin-top:6px; }
-        .ship .sname { font-weight:700; font-size:15px; }
         .ord { font-family:ui-monospace, Menlo, monospace; font-weight:700; font-size:16px; text-align:center; border:1.5px solid #000; padding:4px; margin:6px 0; letter-spacing:.04em; }
         table.items { width:100%; border-collapse:collapse; font-size:10px; margin-top:2px; }
         table.items th, table.items td { border-bottom:1px solid #999; padding:2px 3px; text-align:left; }
@@ -3072,16 +3095,16 @@
         <button class="btn" type="button" data-action="close-stock-modal">Close</button>
       </div>
       <div class="auth-form" style="grid-template-columns:repeat(2,minmax(0,1fr));">
-        <label>Product Code / SKU<input id="stock-sku" type="text" placeholder="e.g. TS-1KG" value="${escapeAttr(edit && edit.sku)}" ${edit ? "readonly" : ""} /></label>
-        <label>Product Name<input id="stock-name" type="text" placeholder="e.g. Tata Salt 1kg" value="${escapeAttr(edit && edit.name)}" /></label>
+        <label>Product Code / SKU<input id="stock-sku" type="text" autocomplete="off" placeholder="e.g. TS-1KG" value="${escapeAttr(edit && edit.sku)}" ${edit ? "readonly" : ""} /></label>
+        <label>Product Name<input id="stock-name" type="text" autocomplete="off" placeholder="e.g. Tata Salt 1kg" value="${escapeAttr(edit && edit.name)}" /></label>
         <label>Price / MRP (₹)<input id="stock-price" type="number" min="0" step="0.01" value="${edit ? edit.mrp || 0 : ""}" /></label>
         <label>Sale Price (₹)<input id="stock-offer" type="number" min="0" step="0.01" value="${edit ? edit.price || 0 : ""}" /></label>
         <label>Cost Price (₹)<input id="stock-cost" type="number" min="0" step="0.01" value="${edit ? edit.cost_price || 0 : ""}" /></label>
         <label>GST %<input id="stock-tax" type="number" min="0" max="28" step="0.01" value="${edit ? edit.tax_percent || 0 : ""}" /></label>
         <label>Quantity<input id="stock-qty" type="number" min="0" step="1" value="${edit ? edit.qty || 0 : ""}" /></label>
         <label>Reorder Level<input id="stock-reorder" type="number" min="0" step="1" value="${edit ? edit.reorder_level || 0 : ""}" /></label>
-        <label>Location<input id="stock-location" type="text" placeholder="Aisle / Rack" value="${escapeAttr(edit && edit.location)}" /></label>
-        <label>HSN<input id="stock-hsn" type="text" placeholder="HSN code" value="${escapeAttr(edit && edit.hsn)}" /></label>
+        <label>Location<input id="stock-location" type="text" autocomplete="off" placeholder="Aisle / Rack" value="${escapeAttr(edit && edit.location)}" /></label>
+        <label>HSN<input id="stock-hsn" type="text" autocomplete="off" placeholder="HSN code" value="${escapeAttr(edit && edit.hsn)}" /></label>
       </div>
       <div class="modal-actions">
         <button class="btn" type="button" data-action="close-stock-modal">Cancel</button>
@@ -4374,7 +4397,8 @@
         it.customer_name,
         money(it.total_amount || 0),
         formatDateTime(it.created_at),
-        it.status
+        it.status,
+        it.customer_phone || ""
       ]);
       const tone = {
         Created: "",
@@ -4404,7 +4428,7 @@
             <table>
               <thead><tr><th>Order</th><th>Channel</th><th>Customer</th><th>Amount</th><th>Date & Time</th><th>Status</th><th>Action</th></tr></thead>
               <tbody>
-                ${rows.map((r) => `<tr><td class="mono">${r[0]}</td><td>${r[1]}</td><td>${r[2]}</td><td class="mono">${r[3]}</td><td class="mono">${r[4]}</td><td><span class="chip ${tone[r[5]] || ""}">${r[5]}</span></td><td style="display:flex; gap:6px;"><button class="btn" type="button" data-action="reprint-order" data-order="${r[0]}">Reprint</button><button class="btn" type="button" data-action="void-order" data-order="${r[0]}">Void</button></td></tr>`).join("") || `<tr><td colspan="7">No orders.</td></tr>`}
+                ${rows.map((r) => `<tr><td class="mono">${r[0]}</td><td>${r[1]}</td><td>${r[2]}</td><td class="mono">${r[3]}</td><td class="mono">${r[4]}</td><td><span class="chip ${tone[r[5]] || ""}">${r[5]}</span></td><td style="display:flex; gap:6px; flex-wrap:wrap;"><button class="btn" type="button" data-action="reprint-order" data-order="${r[0]}">Reprint</button><button class="btn" type="button" data-action="send-order-ebill" data-order="${escapeAttr(r[0])}" data-phone="${escapeAttr(r[6])}" data-customer="${escapeAttr(r[2] || "")}">Send E-Bill</button><button class="btn" type="button" data-action="void-order" data-order="${r[0]}">Void</button></td></tr>`).join("") || `<tr><td colspan="7">No orders.</td></tr>`}
               </tbody>
             </table>
           </div>
@@ -5539,6 +5563,10 @@
       }
       if (action === "reprint-order") {
         reprintOrder(actionBtn.dataset.order);
+        return;
+      }
+      if (action === "send-order-ebill") {
+        sendOrderEbill(actionBtn.dataset.order, actionBtn.dataset.phone, actionBtn.dataset.customer);
         return;
       }
       if (action === "add-stock") {
