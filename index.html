@@ -2705,6 +2705,7 @@
       gstin: fieldVal("set-gstin"),
       pan: fieldVal("set-pan"),
       invoice_prefix: fieldVal("set-invoice-prefix"),
+      website: fieldVal("set-website"),
       prices_include_gst: Boolean(document.getElementById("set-prices-include-gst")?.checked),
       store_name: fieldVal("set-store-name"),
       store_address: fieldVal("set-store-address"),
@@ -5061,6 +5062,7 @@
               <label class="field"><span aria-hidden="true">GSTIN</span><input id="set-gstin" type="text" placeholder="GSTIN" value="${(s.gstin || "").replace(/"/g, "&quot;")}" /></label>
               <label class="field"><span aria-hidden="true">PAN</span><input id="set-pan" type="text" placeholder="PAN" value="${(s.pan || "").replace(/"/g, "&quot;")}" /></label>
               <label class="field"><span aria-hidden="true">Invoice Prefix</span><input id="set-invoice-prefix" type="text" placeholder="e.g. INV/" value="${(s.invoice_prefix || "").replace(/"/g, "&quot;")}" /></label>
+              <label class="field"><span aria-hidden="true">Store website / visit link</span><input id="set-website" type="url" inputmode="url" autocomplete="off" placeholder="https://your-store-link.com" value="${(s.website || "").replace(/"/g, "&quot;")}" /></label>
               <label style="display:flex; align-items:center; justify-content:space-between; gap:16px; font-size:13px; font-weight:600;"><span>Product prices include GST</span><input id="set-prices-include-gst" type="checkbox" role="switch" ${pricesIncludeGst() ? "checked" : ""} /></label>
             </div>
           </article>
