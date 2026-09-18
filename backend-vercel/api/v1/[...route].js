@@ -854,10 +854,13 @@ module.exports = async function handler(req, res) {
         "order_payments",
         `select=mode,amount&order_id=eq.${order.id}`
       ).catch(() => []);
-      const biz = (await sbSelect("businesses", `select=legal_name,gstin,pan&id=eq.${order.business_id}&limit=1`))[0] || {};
+      const biz = (await sbSelect("businesses", `select=code,legal_name,gstin,pan&id=eq.${order.business_id}&limit=1`))[0] || {};
       const store = (await sbSelect("stores", `select=name,address_line,city,state,pincode&id=eq.${order.store_id}&limit=1`))[0] || {};
       const member = order.customer_id
         ? (await sbSelect("membership_members", `select=referral_code,wallet_balance&customer_id=eq.${encode(order.customer_id)}&business_id=eq.${order.business_id}&limit=1`).catch(() => []))[0]
+        : null;
+      const customer = order.customer_id
+        ? (await sbSelect("customers", `select=phone&id=eq.${encode(order.customer_id)}&limit=1`).catch(() => []))[0]
         : null;
       const rewardTxns = await sbSelect(
         "membership_wallet_transactions",
@@ -868,6 +871,7 @@ module.exports = async function handler(req, res) {
         sale_id: order.order_no,
         channel: order.channel,
         customer_name: order.customer_name,
+        customer_phone: customer ? (customer.phone || "") : "",
         status: order.status,
         created_at: order.created_at,
         totals: {
@@ -895,7 +899,7 @@ module.exports = async function handler(req, res) {
           unit_price: Number(it.unit_price || 0),
           line_total: Number(it.line_total || 0)
         })),
-        business: { name: biz.legal_name || "", gstin: biz.gstin || "", pan: biz.pan || "" },
+        business: { name: biz.legal_name || "", code: biz.code || "", gstin: biz.gstin || "", pan: biz.pan || "" },
         store: {
           name: store.name || "",
           address_line: store.address_line || "",
@@ -915,10 +919,32 @@ module.exports = async function handler(req, res) {
         sendJson(res, 400, { error: "valid 10-digit phone required" });
         return;
       }
-      const member = (await sbSelect(
+      // Wallets are per-tenant: the same phone can be a member of several businesses.
+      // A business identifier (code or id, from the bill/link) scopes the lookup.
+      const bizParam = (url.searchParams.get("business") || url.searchParams.get("biz") || "").trim();
+      let scopedBusinessId = "";
+      if (bizParam) {
+        const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(bizParam);
+        const bizRow = isUuid
+          ? (await sbSelect("businesses", `select=id&id=eq.${encode(bizParam)}&limit=1`).catch(() => []))[0]
+          : (await sbSelect("businesses", `select=id&code=eq.${encode(bizParam)}&limit=1`).catch(() => []))[0];
+        if (!bizRow) {
+          sendJson(res, 200, { found: false });
+          return;
+        }
+        scopedBusinessId = bizRow.id;
+      }
+      const members = await sbSelect(
         "membership_members",
-        `select=id,business_id,name,phone,tier,wallet_balance,wallet_expires_at,referral_code,successful_referral_count&phone=eq.${encode(phone)}&limit=1`
-      ).catch(() => []))[0];
+        `select=id,business_id,name,phone,tier,wallet_balance,wallet_expires_at,referral_code,successful_referral_count&phone=eq.${encode(phone)}${scopedBusinessId ? `&business_id=eq.${encode(scopedBusinessId)}` : ""}&limit=5`
+      ).catch(() => []);
+      // Without a business scope, multiple tenant wallets are ambiguous. Never
+      // enumerate which businesses a phone belongs to (privacy); ask for the link.
+      if (!scopedBusinessId && members.length > 1) {
+        sendJson(res, 200, { found: false, ambiguous: true });
+        return;
+      }
+      const member = members[0];
       if (!member) {
         sendJson(res, 200, { found: false });
         return;
@@ -928,11 +954,12 @@ module.exports = async function handler(req, res) {
         `select=transaction_type,amount,balance_after,created_at&member_id=eq.${member.id}&order=created_at.desc&limit=20`
       ).catch(() => []);
       const biz = member.business_id
-        ? (await sbSelect("businesses", `select=legal_name&id=eq.${encode(member.business_id)}&limit=1`).catch(() => []))[0]
+        ? (await sbSelect("businesses", `select=legal_name,website&id=eq.${encode(member.business_id)}&limit=1`).catch(() => []))[0]
         : null;
       sendJson(res, 200, {
         found: true,
         business_name: (biz && biz.legal_name) || "",
+        business_website: (biz && biz.website) || "",
         member: {
           name: member.name,
           phone: member.phone,
@@ -2085,7 +2112,7 @@ module.exports = async function handler(req, res) {
     if (pathname === "/v1/business/setup" && req.method === "GET") {
       const rows = await sbSelect(
         "businesses",
-        `select=legal_name,gstin,pan,invoice_prefix&id=eq.${ctx.businessId}&limit=1`
+        `select=legal_name,gstin,pan,invoice_prefix,website&id=eq.${ctx.businessId}&limit=1`
       );
       const b = rows[0] || {};
       const store = (await sbSelect(
@@ -2097,6 +2124,7 @@ module.exports = async function handler(req, res) {
         gstin: b.gstin || "",
         pan: b.pan || "",
         invoice_prefix: b.invoice_prefix || "",
+        website: b.website || "",
         store_name: store.name || "",
         store_address: store.address_line || "",
         store_city: store.city || "",
@@ -2115,6 +2143,7 @@ module.exports = async function handler(req, res) {
       if (body.gstin !== undefined) bizPatch.gstin = String(body.gstin || "").trim();
       if (body.pan !== undefined) bizPatch.pan = String(body.pan || "").trim();
       if (body.invoice_prefix !== undefined) bizPatch.invoice_prefix = String(body.invoice_prefix || "").trim();
+      if (body.website !== undefined) bizPatch.website = String(body.website || "").trim();
       if (Object.keys(bizPatch).length) {
         await sbUpdate("businesses", `id=eq.${ctx.businessId}`, bizPatch);
       }
