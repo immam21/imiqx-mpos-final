@@ -132,12 +132,16 @@
     });
   }
 
-  function buildShareMessage(businessName, code) {
-    const brand = businessName || "Ennaval";
-    return `🎉 Shop at ${brand} and save more!\n\n`
-      + `Use my referral code: ${code}\n`
-      + `Use it on your first purchase — we BOTH earn reward points 💰 to redeem on future bills.\n\n`
-      + `✨ Great deals every day. Visit us here:\nhttps://ennaval-business-card.vercel.app/`;
+  function buildShareMessage(businessName, code, website) {
+    const brand = businessName || "our store";
+    let msg = `🎉 Shop at ${brand} and save more!\n\n\n`
+      + `Use my referral code: ${code}\n\n\n`
+      + `Use it on your first purchase — we BOTH earn reward points 💰 to redeem on future bills.`;
+    const link = String(website || "").trim();
+    if (link) {
+      msg += `\n\n✨ Great deals every day. Visit us here:\n${link}`;
+    }
+    return msg;
   }
 
   function share(kind) {
@@ -163,7 +167,7 @@
 
   function renderMember(data) {
     const m = data.member;
-    SHARE.message = m.referral_code ? buildShareMessage(data.business_name, m.referral_code) : "";
+    SHARE.message = m.referral_code ? buildShareMessage(data.business_name, m.referral_code, data.business_website) : "";
     const rows = (data.history || []).map((h) => {
       const positive = Number(h.amount || 0) >= 0;
       return `<tr>
@@ -212,9 +216,14 @@
     btn.disabled = true;
     out.innerHTML = `<div class="state">Checking…</div>`;
     try {
-      const res = await fetch(`${API_BASE}/v1/wallet?phone=${encodeURIComponent(raw)}`);
+      const biz = getParam("biz") || getParam("business");
+      const res = await fetch(`${API_BASE}/v1/wallet?phone=${encodeURIComponent(raw)}${biz ? `&business=${encodeURIComponent(biz)}` : ""}`);
       const data = await res.json();
       if (!data.found) {
+        if (data.ambiguous) {
+          out.innerHTML = `<div class="state">This number has rewards accounts at more than one store.<br/>Please open the wallet link from your bill / store to see the right balance.</div>`;
+          return;
+        }
         out.innerHTML = `<div class="state">No rewards account found for this number.<br/>Make a purchase to start earning.</div>`;
         return;
       }

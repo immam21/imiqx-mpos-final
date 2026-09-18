@@ -1,4 +1,4 @@
-const CACHE = 'onecounter-v29';
+const CACHE = 'onecounter-v31';
 const ASSETS = ['./', './index.html', './login.html', './receipt.html', './wallet.html', './admindesk.html', './manifest.json', './icon.svg', './config.js', './pwa.js', './vendor/JsBarcode.all.min.js', './vendor/qrcode.min.js', './vendor/jspdf.umd.min.js', './vendor/html5-qrcode.min.js'];
 const OUTBOX_DB = 'onecounter-outbox';
 const OUTBOX_STORE = 'requests';
