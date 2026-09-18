@@ -92,6 +92,11 @@
       `<tr><td>${it.name || it.sku}</td><td>${it.quantity}</td><td>${money(it.unit_price)}</td><td>${money(it.line_total)}</td></tr>`
     ).join("");
     const gst = splitGst(data.totals);
+    // Scope the rewards-wallet link to this tenant (same phone can have wallets
+    // at several businesses); prefill the customer's phone when known.
+    const walletPhone = String(data.customer_phone || "").replace(/\D/g, "").slice(-10);
+    const walletHref = "wallet.html"
+      + (b.code ? `?biz=${encodeURIComponent(b.code)}${walletPhone ? `&phone=${encodeURIComponent(walletPhone)}` : ""}` : (walletPhone ? `?phone=${encodeURIComponent(walletPhone)}` : ""));
     document.getElementById("receipt").innerHTML = `
       <div class="biz">
         <h1>${b.name || "Tax Invoice"}</h1>
@@ -122,7 +127,7 @@
       ${m.referral_code ? `<div class="referral"><span>Your referral code</span><span class="mono code">${m.referral_code}</span><small>Share it — you and your friend both earn rewards.</small></div>` : ""}
       <div class="foot">
         Paid via ${(data.payment_modes || ["cash"]).join(", ").toUpperCase()}<br/>
-        <a href="wallet.html" style="color:var(--brand);text-decoration:none;font-weight:600;">Check my rewards wallet →</a><br/>
+        <a href="${walletHref}" style="color:var(--brand);text-decoration:none;font-weight:600;">Check my rewards wallet →</a><br/>
         Thank you for shopping with us!
       </div>
     `;
