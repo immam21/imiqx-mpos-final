@@ -106,7 +106,7 @@ async function runBackup() {
       sbSelect("cash_sessions", "select=business_id,store_id,opening_amount,closing_amount,opened_at,closed_at,opened_by_name,closed_by_name,status&order=opened_at.desc").catch(() => []),
       sbSelect("promo_codes", "select=business_id,code,description,discount_type,discount_value,min_order_amount,max_discount_amount,usage_limit,used_count,start_date,end_date,is_active,created_at&order=created_at.desc").catch(() => []),
       sbSelect("purchase_orders", "select=business_id,id,store_id,po_date,place,bill_no,shop_name,ref_id,total_amount,misc,comments,recorded_by_user_id,recorded_by_name,created_at&order=po_date.desc,created_at.desc").catch(() => []),
-      sbSelect("businesses", "select=id,code,legal_name,gstin,pan,invoice_prefix,timezone,is_active,created_at&order=created_at.asc").catch(() => []),
+      sbSelect("businesses", "select=id,code,legal_name,gstin,pan,invoice_prefix,website,timezone,is_active,created_at&order=created_at.asc").catch(() => []),
       sbSelect("stores", "select=id,business_id,code,name,store_type,city,state,is_active,created_at&order=created_at.asc").catch(() => []),
       sbSelect("app_users", "select=id,email,full_name,role,business_id,default_store_id,is_active,created_at&order=created_at.asc").catch(() => [])
     ]);
@@ -201,8 +201,8 @@ async function runBackup() {
         ...purchaseOrders.map((po) => [backupAt, po.id, po.store_id, po.po_date, po.place, po.bill_no, po.shop_name, po.ref_id, po.total_amount, po.misc, po.comments, po.recorded_by_user_id, po.recorded_by_name, po.created_at])
       ]),
       replaceSheetRows(token, "Businesses", [
-        ["Backup At", "Business ID", "Code", "Legal Name", "GSTIN", "PAN", "Invoice Prefix", "Timezone", "Active", "Created At"],
-        ...businesses.map((b) => [backupAt, b.id, b.code, b.legal_name, b.gstin, b.pan, b.invoice_prefix, b.timezone, b.is_active, b.created_at])
+        ["Backup At", "Business ID", "Code", "Legal Name", "GSTIN", "PAN", "Invoice Prefix", "Website", "Timezone", "Active", "Created At"],
+        ...businesses.map((b) => [backupAt, b.id, b.code, b.legal_name, b.gstin, b.pan, b.invoice_prefix, b.website, b.timezone, b.is_active, b.created_at])
       ]),
       replaceSheetRows(token, "Stores", [
         ["Backup At", "Store ID", "Business", "Code", "Name", "Type", "City", "State", "Active", "Created At"],
